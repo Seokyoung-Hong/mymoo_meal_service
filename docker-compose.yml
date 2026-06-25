@@ -1,0 +1,39 @@
+services:
+  mymoo-meal-service:
+    container_name: mymoo-meal-service
+    build: .
+    restart: always
+    env_file:
+      - .env
+    environment:
+      MEAL_TYPES_FILE_NAME: ${MEAL_TYPES_FILE_NAME:-meal_types.json}
+    volumes:
+      - ./app/config/meal_types.json:/app/app/config/meal_types.json:ro
+    ports:
+      - "5600:80"
+    networks:
+      - mymoo-network
+    depends_on:
+      - mymoo-meal-service-db
+
+  mymoo-meal-service-db:
+    container_name: mymoo-meal-service-db
+    image: postgres:15
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-postgres}
+    env_file:
+      - .env
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    networks:
+      - mymoo-network
+
+networks:
+  mymoo-network:
+    driver: bridge
+
+volumes:
+  db_data:
