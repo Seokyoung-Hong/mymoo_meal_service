@@ -20,7 +20,7 @@ dependencies = [
     "asyncpg>=0.30.0",
     "aiosqlite>=0.21.0",
     "psycopg2-binary>=2.9.10",
-    "python-keycloak>=7.0.2",
+    "jwcrypto>=1.5.8",
 ]
 
 [dependency-groups]

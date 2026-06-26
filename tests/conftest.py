@@ -21,10 +21,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///:memory:")
 os.environ.setdefault("KC_SERVER_URL", "http://keycloak.test/")
-os.environ.setdefault("KC_LOCAL_URL", "http://keycloak.test/")
 os.environ.setdefault("KC_REALM", "test-realm")
 os.environ.setdefault("KC_CLIENT_ID", "test-client")
-os.environ.setdefault("KC_CLIENT_SECRET", "test-secret")
 os.environ.setdefault("SERVICE_ACCOUNT_SUB", "service-account-test")
 os.environ.setdefault("SERVICE_ACCOUNT_TOKEN", "test-token")
 

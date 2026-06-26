@@ -1,7 +1,7 @@
-"""카카오 챗봇 서비스의 사용자 관련 API를 정의합니다.
+"""Meal service local user projection management APIs.
 
-이 모듈은 사용자 생성, 조회, 목록 조회 및 삭제 기능을 제공합니다.
-사용자 정보는 외부 사용자 서비스에서 가져오며, SQLAlchemy를 사용하여 데이터베이스와 상호작용합니다.
+이 모듈은 검증된 Keycloak JWT의 subject를 meal-service 로컬 DB에 보관하는
+사용자 projection을 관리합니다. Keycloak Admin API는 호출하지 않습니다.
 """
 
 from typing import Annotated
@@ -14,9 +14,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config.config import Config, logger
 from app.models.user import User
 from app.schemas.users import UserCreate, UserSchema
-from app.utils.db import get_db, get_user_by_id, create_user, delete_user
+from app.utils.db import get_admin_user, get_db, get_user_by_id, create_user, delete_user
 
-router = APIRouter(prefix="/users", tags=["User"])
+router = APIRouter(
+    prefix="/users",
+    tags=["User"],
+    dependencies=[Depends(get_admin_user)],
+)
 
 
 @router.post("/", response_model=UserSchema)
@@ -26,8 +30,8 @@ async def register_user(
 ):
     """사용자를 등록합니다.
 
-    외부 사용자 서비스에서 사용자 존재 여부를 확인 후,
-    중복되지 않는 경우에만 DB에 사용자 등록.
+    Keycloak Admin API 검증 없이 관리자가 명시적으로 로컬 projection을 생성합니다.
+    일반 사용자는 인증된 JWT로 서비스에 접근할 때 자동 생성됩니다.
     """
     return UserSchema.model_validate(await create_user(payload.user_id, db))
 

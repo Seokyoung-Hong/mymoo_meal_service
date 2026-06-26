@@ -14,7 +14,7 @@ from app.config import Config, logger
 from app.database import AsyncSessionLocal
 from app.models.user import User
 from app.models.restaurants import Restaurant
-from app.services.user_service import check_admin_user, keycloak_user_exists_by_id
+from app.services.user_service import check_admin_user
 from app.schemas.users import AdminUserSchema
 from app.utils.auth import (
     AuthenticatedPrincipal,
@@ -43,10 +43,11 @@ async def create_user(user_id: str, db: AsyncSession, check_existance=True) -> U
     """사용자를 생성하는 비즈니스 로직.
 
     사용자가 이미 존재하는지 확인하는 옵션을 포함합니다.
-    해당 옵션은 가급적 활성화해야 합니다.
+    해당 옵션은 가급적 활성화해야 합니다. Keycloak Admin API 조회는 하지 않으며,
+    검증된 JWT의 sub 또는 명시적으로 허용된 로컬 등록 흐름을 신뢰합니다.
 
     Args:
-        user_id (str): 생성할 계정의 keycloak id
+        user_id (str): 생성할 계정의 Keycloak subject
         db (AsyncSession): 비동기 데이터베이스 세션.
 
     Raises:
@@ -63,14 +64,6 @@ async def create_user(user_id: str, db: AsyncSession, check_existance=True) -> U
                 status_code=Config.HttpStatus.CONFLICT,
                 detail="User already exists",
             )
-
-    if not await keycloak_user_exists_by_id(
-        user_id
-    ):  # 외부 서비스에서 사용자 존재 여부 확인
-        raise HTTPException(
-            status_code=Config.HttpStatus.NOT_FOUND,
-            detail="User not found in User service",
-        )
 
     user = User(user_id=user_id)
     db.add(user)
