@@ -4,7 +4,8 @@ services:
     build: .
     restart: always
     env_file:
-      - .env
+      - path: .env
+        required: false
     environment:
       MEAL_TYPES_FILE_NAME: ${MEAL_TYPES_FILE_NAME:-meal_types.json}
     volumes:
@@ -16,6 +17,25 @@ services:
     depends_on:
       - mymoo-meal-service-db
 
+  test-meal-web:
+    container_name: test-meal-web
+    build:
+      context: ./test-meal-web
+    restart: always
+    environment:
+      MEAL_API_PUBLIC_BASE_URL: ${TEST_MEAL_WEB_API_BASE_URL:-/meal-api}
+      MEAL_API_UPSTREAM: ${TEST_MEAL_WEB_API_UPSTREAM:-mymoo-meal-service:80}
+      KEYCLOAK_ISSUER: ${TEST_MEAL_WEB_KEYCLOAK_ISSUER:-https://auth.quanect.kr/realms/Sandori}
+      KEYCLOAK_CLIENT_ID: ${TEST_MEAL_WEB_KEYCLOAK_CLIENT_ID:-mymoo-test-web}
+      KEYCLOAK_DISCOVERY_URL: ${TEST_MEAL_WEB_KEYCLOAK_DISCOVERY_URL:-https://auth.quanect.kr/realms/Sandori/.well-known/openid-configuration}
+      AUTH_DEV_HEADER_FALLBACK_ENABLED: ${AUTH_DEV_HEADER_FALLBACK_ENABLED:-false}
+    ports:
+      - "5601:80"
+    networks:
+      - mymoo-network
+    depends_on:
+      - mymoo-meal-service
+
   mymoo-meal-service-db:
     container_name: mymoo-meal-service-db
     image: postgres:15
@@ -25,7 +45,8 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       POSTGRES_DB: ${POSTGRES_DB:-postgres}
     env_file:
-      - .env
+      - path: .env
+        required: false
     volumes:
       - db_data:/var/lib/postgresql/data
     networks:

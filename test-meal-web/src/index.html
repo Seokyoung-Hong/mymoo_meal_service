@@ -1,0 +1,393 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Maemoo Meal Portal</title>
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="side-nav" aria-label="사이트 선택">
+        <div class="brand">
+          <div class="brand-mark">M</div>
+          <div>
+            <strong>Maemoo</strong>
+            <span>Meal Portal</span>
+          </div>
+        </div>
+        <button class="nav-item active" data-mode="user" type="button">
+          <span class="nav-icon">U</span>
+          사용자 사이트
+        </button>
+        <button class="nav-item" data-mode="owner" type="button">
+          <span class="nav-icon">O</span>
+          식당주인 사이트
+        </button>
+        <button class="nav-item" data-mode="admin" type="button">
+          <span class="nav-icon">A</span>
+          관리자 시나리오
+        </button>
+        <div class="side-note">
+          Keycloak Bearer 토큰 또는 local/dev의 X-User-ID fallback으로 Meal Service API를 호출합니다.
+        </div>
+      </aside>
+
+      <main class="main">
+        <header class="topbar">
+          <div>
+            <h1>Meal Service API 포털</h1>
+            <p>식단 조회, 식당주 등록 신청, 식당 운영, 가격 정책을 한 곳에서 실행합니다.</p>
+          </div>
+          <div class="auth-status" id="authStatus">인증 상태 확인 중</div>
+        </header>
+
+        <section class="workspace">
+          <div class="control-rail">
+            <section class="panel">
+              <div class="panel-heading">
+                <h2>연결 설정</h2>
+                <button class="ghost-button" id="saveSettings" type="button">저장</button>
+              </div>
+              <label>
+                API Base URL
+                <input id="apiBaseUrl" placeholder="예: http://localhost:5600" />
+              </label>
+              <label>
+                Keycloak Issuer
+                <input id="keycloakIssuer" placeholder="https://auth.example.com/realms/mymoo" />
+              </label>
+              <label>
+                Client ID
+                <input id="keycloakClientId" placeholder="mymoo-meal-service" />
+              </label>
+              <label>
+                Redirect URI
+                <input id="redirectUri" />
+              </label>
+              <div class="button-row">
+                <button id="loginButton" type="button">Keycloak 로그인</button>
+                <button class="secondary-button" id="logoutButton" type="button">로그아웃</button>
+              </div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-heading">
+                <h2>인증 헤더</h2>
+              </div>
+              <div class="segmented" role="group" aria-label="인증 모드">
+                <button class="active" data-auth-mode="bearer" type="button">Bearer</button>
+                <button data-auth-mode="dev" type="button">X-User-ID</button>
+              </div>
+              <label>
+                개발용 X-User-ID
+                <input id="devUserId" placeholder="local-user-sub" />
+              </label>
+              <label>
+                Access Token
+                <textarea id="accessToken" rows="6" spellcheck="false"></textarea>
+              </label>
+            </section>
+
+            <section class="panel">
+              <div class="panel-heading">
+                <h2>공통 조회</h2>
+              </div>
+              <div class="quick-actions">
+                <button data-action="health" type="button">헬스 체크</button>
+                <button data-action="listUsers" type="button">사용자 목록</button>
+                <button data-action="registerCurrentUser" type="button">현재 사용자 등록</button>
+              </div>
+            </section>
+          </div>
+
+          <section class="scenario-area">
+            <div class="mode-view active" id="userView">
+              <div class="section-title">
+                <h2>사용자 사이트</h2>
+                <p>식당과 식단을 찾고, 가격을 확인합니다.</p>
+              </div>
+              <div class="grid two">
+                <section class="panel">
+                  <div class="panel-heading">
+                    <h3>식단 찾기</h3>
+                    <button data-action="todayMeals" type="button">오늘 식단</button>
+                  </div>
+                  <div class="form-grid">
+                    <label>식당명 <input id="mealRestaurantName" /></label>
+                    <label>식사 유형
+                      <select id="mealTypeFilter">
+                        <option value="">전체</option>
+                        <option value="breakfast">breakfast</option>
+                        <option value="lunch">lunch</option>
+                        <option value="dinner">dinner</option>
+                      </select>
+                    </label>
+                    <label>날짜 <input id="mealDate" type="date" /></label>
+                    <label>시작일 <input id="mealStartDate" type="date" /></label>
+                    <label>종료일 <input id="mealEndDate" type="date" /></label>
+                    <label>식단 ID <input id="mealLookupId" type="number" min="1" /></label>
+                  </div>
+                  <div class="button-row">
+                    <button data-action="listMeals" type="button">식단 목록</button>
+                    <button data-action="latestMeals" type="button">식당별 최신</button>
+                    <button data-action="getMeal" type="button">식단 상세</button>
+                  </div>
+                </section>
+
+                <section class="panel">
+                  <div class="panel-heading">
+                    <h3>식당 찾기</h3>
+                    <button data-action="listRestaurants" type="button">식당 검색</button>
+                  </div>
+                  <div class="form-grid">
+                    <label>식당명 <input id="restaurantName" /></label>
+                    <label>식당 유형
+                      <select id="establishmentType">
+                        <option value="">전체</option>
+                        <option value="student">student</option>
+                        <option value="fixed_menu_restaurant">fixed_menu_restaurant</option>
+                        <option value="fixed_korean_buffet">fixed_korean_buffet</option>
+                        <option value="variable_korean_buffet">variable_korean_buffet</option>
+                      </select>
+                    </label>
+                    <label>캠퍼스 여부
+                      <select id="isCampus">
+                        <option value="">전체</option>
+                        <option value="true">true</option>
+                        <option value="false">false</option>
+                      </select>
+                    </label>
+                    <label>식당 ID <input id="restaurantLookupId" type="number" min="1" /></label>
+                    <label>가격 날짜 <input id="priceServedDate" type="date" /></label>
+                    <label>가격 식사 유형
+                      <select id="priceMealType">
+                        <option value="">없음</option>
+                        <option value="breakfast">breakfast</option>
+                        <option value="lunch">lunch</option>
+                        <option value="dinner">dinner</option>
+                      </select>
+                    </label>
+                  </div>
+                  <div class="button-row">
+                    <button data-action="getRestaurant" type="button">식당 상세</button>
+                    <button data-action="restaurantMeals" type="button">식당 식단</button>
+                    <button data-action="resolvePrice" type="button">가격 확인</button>
+                  </div>
+                </section>
+              </div>
+
+            </div>
+
+            <div class="mode-view" id="ownerView">
+              <div class="section-title">
+                <h2>식당주인 사이트</h2>
+                <p>식당 등록을 신청하고, 내 식당의 식단/메뉴/관리자/가격 정책을 운영합니다.</p>
+              </div>
+
+              <section class="panel">
+                <div class="panel-heading">
+                  <h3>식당 등록 신청</h3>
+                  <button data-action="ownerSubmitRestaurantRequest" type="button">신청 제출</button>
+                </div>
+                <div class="form-grid wide">
+                  <label>식당명 <input id="ownerRequestName" value="주인 신청 식당" /></label>
+                  <label>식당 유형
+                    <select id="ownerRequestType">
+                      <option value="fixed_menu_restaurant">fixed_menu_restaurant</option>
+                      <option value="student">student</option>
+                      <option value="fixed_korean_buffet">fixed_korean_buffet</option>
+                      <option value="variable_korean_buffet">variable_korean_buffet</option>
+                    </select>
+                  </label>
+                  <label>가격 <input id="ownerRequestPrice" type="number" min="1" value="9000" /></label>
+                  <label>건물/위치 <input id="ownerRequestBuilding" value="정문 근처" /></label>
+                  <label>오픈 <input id="ownerRequestOpenStart" type="time" value="09:00" /></label>
+                  <label>마감 <input id="ownerRequestOpenEnd" type="time" value="20:00" /></label>
+                  <label>신청 ID <input id="ownerRequestLookupId" type="number" min="1" /></label>
+                </div>
+                <div class="button-row">
+                  <button data-action="ownerListRequests" type="button">내 신청 목록</button>
+                  <button data-action="ownerGetRequest" type="button">신청 상세</button>
+                  <button class="danger-button" data-action="ownerDeleteRequest" type="button">신청 삭제</button>
+                </div>
+              </section>
+
+              <section class="panel">
+                <div class="panel-heading">
+                  <h3>내 식당</h3>
+                  <button data-action="ownerRestaurants" type="button">내 식당 조회</button>
+                </div>
+                <div class="form-grid wide">
+                  <label>Owner user_id <input id="ownerUserId" /></label>
+                  <label>Manager user_id <input id="managerUserId" /></label>
+                  <label>식당 ID <input id="ownerRestaurantId" type="number" min="1" /></label>
+                  <label>비활성 포함
+                    <select id="includeInactive">
+                      <option value="false">false</option>
+                      <option value="true">true</option>
+                    </select>
+                  </label>
+                </div>
+                <div class="button-row">
+                  <button data-action="ownerRestaurantDetail" type="button">식당 상세</button>
+                  <button class="danger-button" data-action="deleteRestaurant" type="button">식당 삭제</button>
+                </div>
+              </section>
+
+              <div class="grid two">
+                <section class="panel">
+                  <div class="panel-heading">
+                    <h3>식단 등록/수정</h3>
+                    <button data-action="createMeal" type="button">식단 등록</button>
+                  </div>
+                  <div class="form-grid">
+                    <label>식당 ID <input id="ownerMealRestaurantId" type="number" min="1" /></label>
+                    <label>식단 ID <input id="ownerMealId" type="number" min="1" /></label>
+                    <label>제공일 <input id="ownerMealDate" type="date" /></label>
+                    <label>식사 유형
+                      <select id="ownerMealType">
+                        <option value="lunch">lunch</option>
+                        <option value="breakfast">breakfast</option>
+                        <option value="dinner">dinner</option>
+                      </select>
+                    </label>
+                    <label>대표 메뉴 <input id="mainMenu" value="제육볶음" /></label>
+                    <label>보조 메뉴 <input id="sideMenus" value="잡곡밥, 미역국, 김치" /></label>
+                    <label>이미지 URL <input id="imageUrl" placeholder="https://..." /></label>
+                  </div>
+                  <div class="button-row">
+                    <button data-action="updateMeal" type="button">식단 전체 수정</button>
+                    <button data-action="patchMealMenu" type="button">메뉴 추가/수정</button>
+                    <button class="danger-button" data-action="deleteMealMenu" type="button">메뉴 삭제</button>
+                    <button class="danger-button" data-action="deleteMeal" type="button">식단 삭제</button>
+                  </div>
+                </section>
+
+                <section class="panel">
+                  <div class="panel-heading">
+                    <h3>관리자 관리</h3>
+                    <button data-action="listManagers" type="button">관리자 목록</button>
+                  </div>
+                  <label>관리자 user_id
+                    <input id="restaurantManagerUserId" placeholder="manager-sub" />
+                  </label>
+                  <div class="button-row">
+                    <button data-action="addManager" type="button">관리자 추가</button>
+                    <button class="danger-button" data-action="removeManager" type="button">관리자 제거</button>
+                  </div>
+                </section>
+              </div>
+
+              <section class="panel">
+                <div class="panel-heading">
+                  <h3>가격 정책</h3>
+                  <button data-action="listPricing" type="button">정책 목록</button>
+                </div>
+                <div class="form-grid wide">
+                  <label>정책 ID <input id="pricingPolicyId" type="number" min="1" /></label>
+                  <label>정책 유형
+                    <select id="policyType">
+                      <option value="restaurant_fixed">restaurant_fixed</option>
+                      <option value="meal_type_fixed">meal_type_fixed</option>
+                      <option value="date_specific">date_specific</option>
+                    </select>
+                  </label>
+                  <label>가격 <input id="policyPrice" type="number" min="1" value="8500" /></label>
+                  <label>식사 유형
+                    <select id="policyMealType">
+                      <option value="">없음</option>
+                      <option value="breakfast">breakfast</option>
+                      <option value="lunch">lunch</option>
+                      <option value="dinner">dinner</option>
+                    </select>
+                  </label>
+                  <label>제공일 <input id="policyDate" type="date" /></label>
+                  <label>활성
+                    <select id="policyActive">
+                      <option value="true">true</option>
+                      <option value="false">false</option>
+                    </select>
+                  </label>
+                </div>
+                <div class="button-row">
+                  <button data-action="createPricing" type="button">정책 생성</button>
+                  <button data-action="updatePricing" type="button">정책 수정</button>
+                  <button data-action="updatePricingStatus" type="button">활성 상태 변경</button>
+                  <button class="danger-button" data-action="deletePricing" type="button">정책 삭제</button>
+                </div>
+              </section>
+            </div>
+
+            <div class="mode-view" id="adminView">
+              <div class="section-title">
+                <h2>관리자 시나리오</h2>
+                <p>meal_admin 또는 global_admin 토큰으로 승인, 거절, 직접 생성, 활성 상태 변경을 실행합니다.</p>
+              </div>
+
+              <section class="panel">
+                <div class="panel-heading">
+                  <h3>등록 요청 심사</h3>
+                  <button data-action="listRequests" type="button">전체 요청 목록</button>
+                </div>
+                <div class="form-grid wide">
+                  <label>요청 ID <input id="adminRequestId" type="number" min="1" /></label>
+                  <label>거절 사유 <input id="rejectionMessage" value="정보가 부족합니다." /></label>
+                </div>
+                <div class="button-row">
+                  <button data-action="approveRequest" type="button">승인</button>
+                  <button class="danger-button" data-action="rejectRequest" type="button">거절</button>
+                </div>
+              </section>
+
+              <section class="panel">
+                <div class="panel-heading">
+                  <h3>식당 직접 생성/수정</h3>
+                  <button data-action="createRestaurant" type="button">식당 직접 생성</button>
+                </div>
+                <div class="form-grid wide">
+                  <label>식당 ID <input id="adminRestaurantId" type="number" min="1" /></label>
+                  <label>식당명 <input id="adminRestaurantName" value="관리자 생성 식당" /></label>
+                  <label>Owner user_id <input id="adminRestaurantOwnerUserId" /></label>
+                  <label>식당 유형
+                    <select id="adminRestaurantType">
+                      <option value="fixed_menu_restaurant">fixed_menu_restaurant</option>
+                      <option value="student">student</option>
+                      <option value="fixed_korean_buffet">fixed_korean_buffet</option>
+                      <option value="variable_korean_buffet">variable_korean_buffet</option>
+                    </select>
+                  </label>
+                  <label>가격 <input id="adminRestaurantPrice" type="number" min="1" value="9500" /></label>
+                  <label>건물/위치 <input id="adminRestaurantBuilding" value="학생회관" /></label>
+                  <label>활성
+                    <select id="restaurantActive">
+                      <option value="true">true</option>
+                      <option value="false">false</option>
+                    </select>
+                  </label>
+                </div>
+                <div class="button-row">
+                  <button data-action="updateRestaurant" type="button">식당 정보 수정</button>
+                  <button data-action="updateRestaurantStatus" type="button">활성 상태 변경</button>
+                </div>
+              </section>
+            </div>
+          </section>
+
+          <aside class="response-rail">
+            <section class="panel response-panel">
+              <div class="panel-heading">
+                <h2>API 응답</h2>
+                <button class="ghost-button" id="clearOutput" type="button">지우기</button>
+              </div>
+              <div class="request-line" id="requestLine">아직 호출 없음</div>
+              <pre id="output">{}</pre>
+            </section>
+          </aside>
+        </section>
+      </main>
+    </div>
+    <script src="./app.js"></script>
+  </body>
+</html>
