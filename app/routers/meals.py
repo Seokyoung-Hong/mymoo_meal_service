@@ -88,12 +88,12 @@ def _meal_audit_payload(meal: Meal) -> dict[str, object]:
 
 
 def _legacy_menu_from_parts(main_menu: str, side_menus: list[str]) -> list[str]:
-    """Return the transitional legacy menu list from the Maemoo menu columns."""
+    """Return the transitional legacy menu list from the Mymoo menu columns."""
     return [main_menu, *side_menus]
 
 
 def _meal_response(meal: Meal) -> MealResponse:
-    """Build the normal meal response using the new Maemoo menu contract."""
+    """Build the normal meal response using the new Mymoo menu contract."""
     return MealResponse(
         id=meal.id,
         served_date=meal.served_date,

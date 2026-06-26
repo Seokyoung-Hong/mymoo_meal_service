@@ -1,6 +1,6 @@
-# Maemoo Meal Service
+# Mymoo Meal Service
 
-FastAPI 기반의 Maemoo 식당/식단 서비스입니다. 식당 등록 요청, 식단 조회/관리, 가격 정책, 관리자 권한, 감사 로그를 제공합니다.
+FastAPI 기반의 Mymoo 식당/식단 서비스입니다. 식당 등록 요청, 식단 조회/관리, 가격 정책, 관리자 권한, 감사 로그를 제공합니다.
 
 ## 핵심 동작
 

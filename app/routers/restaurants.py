@@ -93,7 +93,7 @@ router = APIRouter(prefix="/restaurants", tags=["Restaurant"])
 
 
 def _restaurant_meal_response(meal: Meal) -> MealResponse:
-    """Build the restaurant-scoped meal response using the Maemoo menu contract."""
+    """Build the restaurant-scoped meal response using the Mymoo menu contract."""
     return MealResponse(
         id=meal.id,
         served_date=meal.served_date,

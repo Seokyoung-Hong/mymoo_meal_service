@@ -118,7 +118,7 @@ def _assert_no_future_unique_duplicates(connection: sa.Connection) -> None:
 
 
 def upgrade() -> None:
-    """Add Maemoo served-date/menu columns and guarded uniqueness."""
+    """Add Mymoo served-date/menu columns and guarded uniqueness."""
     op.add_column("meal", sa.Column("served_date", sa.Date(), nullable=True))
     op.add_column("meal", sa.Column("main_menu", sa.Text(), nullable=True))
     op.add_column("meal", sa.Column("side_menus", NonEscapedJSON(), nullable=True))
@@ -157,7 +157,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    """Remove Maemoo served-date/menu columns and indexes."""
+    """Remove Mymoo served-date/menu columns and indexes."""
     op.drop_index("meal_restaurant_type_served_date_unique", table_name="meal")
     op.drop_index("meal_restaurant_type_served_date_index", table_name="meal")
     op.drop_index("meal_restaurant_served_date_index", table_name="meal")

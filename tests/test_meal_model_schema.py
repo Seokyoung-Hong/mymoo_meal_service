@@ -1,4 +1,4 @@
-"""Regression tests for the Maemoo meal model and schema contract."""
+"""Regression tests for the Mymoo meal model and schema contract."""
 
 from __future__ import annotations
 
