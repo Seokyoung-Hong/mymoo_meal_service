@@ -197,19 +197,22 @@ def _submission_audit_payload(submission: RestaurantSubmission) -> dict[str, obj
     }
 
 
-async def _get_or_create_manager_user(
+async def _get_manager_user_or_404(
     user_id: str,
     db: AsyncSession,
 ) -> User:
-    """Get or create a local User row inside the caller's transaction."""
+    """Return an existing local User row for owner/manager assignment."""
     manager = await db.scalar(select(User).where(User.user_id == user_id))
     if manager is not None:
         return manager
 
-    manager = User(user_id=user_id)
-    db.add(manager)
-    await db.flush()
-    return manager
+    raise HTTPException(
+        status_code=Config.HttpStatus.NOT_FOUND,
+        detail=(
+            "해당 user_id의 로컬 사용자를 찾을 수 없습니다. "
+            "사용자가 먼저 로그인하거나 관리자가 /users에 등록해야 합니다."
+        ),
+    )
 
 
 @router.get("/requests", response_model=CustomPage[RestaurantSubmissionSchema])
@@ -390,7 +393,7 @@ async def create_restaurant(
     }
 
     try:
-        owner_user = await _get_or_create_manager_user(normalized_owner_user_id, db)
+        owner_user = await _get_manager_user_or_404(normalized_owner_user_id, db)
         new_restaurant = build_restaurant_model(request, owner_id=owner_user.id)
         db.add(new_restaurant)
         await db.flush()
@@ -729,7 +732,7 @@ async def add_restaurant_manager(  # noqa: PLR0913
     manager_user_id = _normalized_manager_user_id(manager_request.user_id)
 
     try:
-        manager = await _get_or_create_manager_user(manager_user_id, db)
+        manager = await _get_manager_user_or_404(manager_user_id, db)
         await db.refresh(restaurant, attribute_names=["managers"])
         existing_managers = _restaurant_managers(restaurant)
 
@@ -1062,7 +1065,7 @@ async def update_restaurant(  # noqa: PLR0913
 
         resolved_owner = None
         if owner_user_id is not None:
-            resolved_owner = await _get_or_create_manager_user(owner_user_id, db)
+            resolved_owner = await _get_manager_user_or_404(owner_user_id, db)
         else:
             resolved_owner = await db.get(User, restaurant.owner)
             if resolved_owner is None:

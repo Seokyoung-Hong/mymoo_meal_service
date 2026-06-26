@@ -32,6 +32,14 @@ async def seed_restaurant_with_owner(db_session: AsyncSession) -> Restaurant:
     return restaurant
 
 
+async def seed_user_projection(db_session: AsyncSession, user_id: str) -> User:
+    """Persist a local user projection for owner/manager assignment tests."""
+    user = User(user_id=user_id)
+    db_session.add(user)
+    await db_session.commit()
+    return user
+
+
 async def add_manager_association(
     db_session: AsyncSession,
     restaurant: Restaurant,
@@ -63,6 +71,7 @@ async def test_owner_adds_and_lists_manager_by_user_id(
     db_session: AsyncSession,
 ) -> None:
     restaurant = await seed_restaurant_with_owner(db_session)
+    await seed_user_projection(db_session, "manager-sub")
 
     add_response = await async_client.post(
         f"/restaurants/{restaurant.id}/managers",
@@ -119,6 +128,7 @@ async def test_duplicate_manager_add_is_idempotent_without_extra_audit(
     db_session: AsyncSession,
 ) -> None:
     restaurant = await seed_restaurant_with_owner(db_session)
+    await seed_user_projection(db_session, "duplicate-manager-sub")
     request_id = "manager-duplicate-request-id"
 
     first_response = await async_client.post(
@@ -149,6 +159,7 @@ async def test_manager_add_and_remove_create_audit_logs_with_request_id(
     db_session: AsyncSession,
 ) -> None:
     restaurant = await seed_restaurant_with_owner(db_session)
+    await seed_user_projection(db_session, "audited-manager-sub")
     add_request_id = "manager-add-request-id"
     remove_request_id = "manager-remove-request-id"
 
@@ -194,8 +205,9 @@ async def test_admin_can_add_list_and_remove_manager(
 ) -> None:
     restaurant = await seed_restaurant_with_owner(db_session)
     admin = User(user_id="admin-sub")
+    manager = User(user_id="admin-added-manager-sub")
     admin.auth_meal_admin = True
-    db_session.add(admin)
+    db_session.add_all([admin, manager])
     await db_session.commit()
     await override_current_user(test_app, admin)
 

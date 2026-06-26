@@ -188,6 +188,8 @@ async def test_restaurant_write_paths_create_audit_logs_and_hide_brunch_time(
     fake_authenticated_user.created_at = datetime(2026, 6, 24, tzinfo=timezone.utc)
     fake_authenticated_user.auth_meal_admin = True
     await seed_user(db_session)
+    db_session.add(User(user_id="restaurant-owner-sub"))
+    await db_session.commit()
 
     submission_response = await async_client.post(
         "/restaurants/requests",
@@ -252,6 +254,26 @@ async def test_restaurant_write_paths_create_audit_logs_and_hide_brunch_time(
     assert restaurant_update_audit.after["name"] == "Updated Final Wave Restaurant"
     assert request_delete_audit.action == "restaurant.request.delete"
     assert restaurant_delete_audit.action == "restaurant.delete"
+
+
+async def test_restaurant_owner_assignment_requires_existing_local_user(
+    async_client: AsyncClient,
+    db_session: AsyncSession,
+    fake_authenticated_user: User,
+) -> None:
+    fake_authenticated_user.auth_meal_admin = True
+    await seed_user(db_session)
+
+    response = await async_client.post(
+        "/restaurants/",
+        json={**RESTAURANT_PAYLOAD, "owner_user_id": "unknown-owner-sub"},
+    )
+
+    assert response.status_code == 404
+    user = await db_session.scalar(
+        select(User).where(User.user_id == "unknown-owner-sub")
+    )
+    assert user is None
 
 
 async def test_restaurant_payload_rejects_brunch_time(
