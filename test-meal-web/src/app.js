@@ -1,4 +1,13 @@
 const storageKey = "mymooMealPortal";
+const authStorageKey = `${storageKey}:auth`;
+const persistedSettingKeys = [
+  "apiBaseUrl",
+  "keycloakIssuer",
+  "keycloakClientId",
+  "redirectUri",
+  "authMode",
+  "devUserId",
+];
 
 const state = {
   apiBaseUrl: "/meal-api",
@@ -23,14 +32,57 @@ function setOutput(value, requestLine = "완료") {
 
 function loadStoredState() {
   const raw = localStorage.getItem(storageKey);
-  if (!raw) {
+  if (raw) {
+    try {
+      const stored = JSON.parse(raw);
+      persistedSettingKeys.forEach((key) => {
+        if (stored[key] !== undefined) {
+          state[key] = stored[key];
+        }
+      });
+      persistSettings();
+    } catch {
+      localStorage.removeItem(storageKey);
+    }
+  }
+
+  const authRaw = sessionStorage.getItem(authStorageKey);
+  if (authRaw) {
+    try {
+      const authState = JSON.parse(authRaw);
+      ["accessToken", "idToken", "refreshToken", "expiresAt"].forEach((key) => {
+        if (authState[key] !== undefined) {
+          state[key] = authState[key];
+        }
+      });
+    } catch {
+      sessionStorage.removeItem(authStorageKey);
+    }
+  }
+}
+
+function persistSettings() {
+  const settings = {};
+  persistedSettingKeys.forEach((key) => {
+    settings[key] = state[key];
+  });
+  localStorage.setItem(storageKey, JSON.stringify(settings));
+}
+
+function persistSessionAuth() {
+  if (!state.accessToken && !state.idToken && !state.refreshToken) {
+    sessionStorage.removeItem(authStorageKey);
     return;
   }
-  try {
-    Object.assign(state, JSON.parse(raw));
-  } catch {
-    localStorage.removeItem(storageKey);
-  }
+  sessionStorage.setItem(
+    authStorageKey,
+    JSON.stringify({
+      accessToken: state.accessToken,
+      idToken: state.idToken,
+      refreshToken: state.refreshToken,
+      expiresAt: state.expiresAt,
+    }),
+  );
 }
 
 function saveState() {
@@ -40,7 +92,8 @@ function saveState() {
   state.redirectUri = $("redirectUri").value.trim();
   state.devUserId = $("devUserId").value.trim();
   state.accessToken = $("accessToken").value.trim();
-  localStorage.setItem(storageKey, JSON.stringify(state));
+  persistSettings();
+  persistSessionAuth();
   updateAuthStatus();
 }
 
@@ -243,7 +296,8 @@ async function completeLoginIfNeeded() {
   sessionStorage.removeItem("mymooAuthIssuer");
   sessionStorage.removeItem("mymooAuthClientId");
   sessionStorage.removeItem("mymooRedirectUri");
-  localStorage.setItem(storageKey, JSON.stringify(state));
+  persistSettings();
+  persistSessionAuth();
   window.history.replaceState({}, document.title, state.redirectUri);
   applyStateToInputs();
   setOutput(decodeJwt(state.accessToken), "Keycloak 로그인 완료");

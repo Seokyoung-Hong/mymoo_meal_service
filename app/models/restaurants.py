@@ -119,11 +119,12 @@ class Restaurant(Base):
         # 1. 이름·소유자·관리자 관계 초기화
         self.name = f"[삭제됨] {self.name}"
         self.owner = get_service_user_id()  # Service User의 DB ID 사용
+        self.is_active = False
         self.managers.clear()
 
         # 2. 컬럼 검사: id, name, owner 제외 + nullable=False인 컬럼도 제외
         mapper = inspect(self.__class__)
-        exclude = {"id", "name", "owner"}
+        exclude = {"id", "name", "owner", "is_active"}
         for col in mapper.columns:
             if col.name in exclude:
                 continue

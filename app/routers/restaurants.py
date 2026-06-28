@@ -1143,7 +1143,7 @@ async def update_restaurant(  # noqa: PLR0913
 async def delete_restaurant(
     restaurant_id: int,
     request: Request,
-    restaurant: Annotated[Restaurant, Depends(get_restaurant_with_permission)],
+    restaurant: Annotated[Restaurant, Depends(get_restaurant_or_404)],
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_user)],
 ):
@@ -1171,6 +1171,7 @@ async def delete_restaurant(
     )
 
     try:
+        await _ensure_restaurant_owner_or_admin(restaurant, current_user)
         operating_hours = await fetch_operating_hours_dict(
             db, restaurant_id=restaurant_id
         )
@@ -1208,6 +1209,9 @@ async def delete_restaurant(
             current_user.id,
         )
 
+    except HTTPException:
+        await db.rollback()
+        raise
     except Exception as e:
         await db.rollback()
         logger.error(

@@ -123,6 +123,24 @@ async def test_non_owner_manager_cannot_grant_manager_access(
     assert manager_count == 2
 
 
+async def test_non_owner_manager_cannot_delete_restaurant(
+    async_client: AsyncClient,
+    db_session: AsyncSession,
+    test_app: FastAPI,
+) -> None:
+    restaurant = await seed_restaurant_with_owner(db_session)
+    restaurant_id = restaurant.id
+    manager = User(user_id="delete-manager-sub")
+    await add_manager_association(db_session, restaurant, manager)
+    await override_current_user(test_app, manager)
+
+    response = await async_client.delete(f"/restaurants/{restaurant_id}")
+
+    persisted = await db_session.get(Restaurant, restaurant_id)
+    assert response.status_code == 403
+    assert persisted is not None
+
+
 async def test_duplicate_manager_add_is_idempotent_without_extra_audit(
     async_client: AsyncClient,
     db_session: AsyncSession,

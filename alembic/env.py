@@ -18,12 +18,12 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 # ✅ 데이터베이스 설정 (없을 경우 에러 발생)
 DATABASE_URL = os.environ.get("DATABASE_URL", "").strip() or Config.DATABASE_URL
-print(f"🔗 DATABASE_URL: {DATABASE_URL}")  # ✅ 디버깅용 출력
 if not DATABASE_URL:
     raise ValueError("❌ DATABASE_URL 환경 변수가 설정되지 않았습니다.")
 
 config = context.config
 url = make_url(DATABASE_URL)
+print(f"🔗 DATABASE_URL: {url.render_as_string(hide_password=True)}")
 if url.drivername.startswith("postgresql+asyncpg"):
     url = url.set(drivername="postgresql")  # alembic은 sync driver 사용
 config.set_main_option("sqlalchemy.url", str(url))
