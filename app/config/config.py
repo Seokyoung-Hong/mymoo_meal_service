@@ -113,7 +113,7 @@ class Config:
     MIN_TEST_USERS = 2
     KC_SERVER_URL = os.getenv("KC_SERVER_URL", "https://auth.quanect.kr/")
     KC_CLIENT_ID = os.getenv("KC_CLIENT_ID", "mymoo-meal-service")
-    KC_REALM = os.getenv("KC_REALM", "replace-with-keycloak-realm")
+    KC_REALM = os.getenv("KC_REALM", "Mymoo")
 
     AUTH_DEV_HEADER_FALLBACK_ENABLED = (
         os.getenv("AUTH_DEV_HEADER_FALLBACK_ENABLED", "false").lower() == "true"

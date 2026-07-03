@@ -25,7 +25,7 @@ docker compose up -d --build
 
 - `MEAL_API_PUBLIC_BASE_URL`: 브라우저가 호출할 API base URL, 기본 `https://mymoo.quanect.kr/meal`
 - `MEAL_API_UPSTREAM`: nginx가 `/meal-api/*` 프록시 모드에서 사용할 upstream, 루트 compose 기본 `mymoo-meal-service:80`
-- `KEYCLOAK_ISSUER`: Keycloak realm issuer, 기본 `https://auth.quanect.kr/realms/Sandori`
+- `KEYCLOAK_ISSUER`: Keycloak realm issuer, 기본 `https://auth.quanect.kr/realms/Mymoo`
 - `KEYCLOAK_CLIENT_ID`: 브라우저 로그인용 public client id, 기본 `mymoo-test-web`
 - `KEYCLOAK_DISCOVERY_URL`: OIDC discovery URL
 - `AUTH_DEV_HEADER_FALLBACK_ENABLED`: 화면 표시용 fallback 여부

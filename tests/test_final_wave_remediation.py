@@ -310,7 +310,7 @@ def test_residue_checker_default_paths_remain_production_scoped() -> None:
 def test_config_default_realm_is_mymoo_safe_placeholder() -> None:
     config_path = Path(__file__).resolve().parents[1] / "app" / "config" / "config.py"
 
-    assert 'KC_REALM = os.getenv("KC_REALM", "replace-with-keycloak-realm")' in (
+    assert 'KC_REALM = os.getenv("KC_REALM", "Mymoo")' in (
         config_path.read_text(encoding="utf-8")
     )
 

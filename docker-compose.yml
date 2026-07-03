@@ -25,9 +25,9 @@ services:
     environment:
       MEAL_API_PUBLIC_BASE_URL: ${TEST_MEAL_WEB_API_BASE_URL:-https://mymoo.quanect.kr/meal}
       MEAL_API_UPSTREAM: ${TEST_MEAL_WEB_API_UPSTREAM:-mymoo-meal-service:80}
-      KEYCLOAK_ISSUER: ${TEST_MEAL_WEB_KEYCLOAK_ISSUER:-https://auth.quanect.kr/realms/Sandori}
+      KEYCLOAK_ISSUER: ${TEST_MEAL_WEB_KEYCLOAK_ISSUER:-https://auth.quanect.kr/realms/Mymoo}
       KEYCLOAK_CLIENT_ID: ${TEST_MEAL_WEB_KEYCLOAK_CLIENT_ID:-mymoo-test-web}
-      KEYCLOAK_DISCOVERY_URL: ${TEST_MEAL_WEB_KEYCLOAK_DISCOVERY_URL:-https://auth.quanect.kr/realms/Sandori/.well-known/openid-configuration}
+      KEYCLOAK_DISCOVERY_URL: ${TEST_MEAL_WEB_KEYCLOAK_DISCOVERY_URL:-https://auth.quanect.kr/realms/Mymoo/.well-known/openid-configuration}
       AUTH_DEV_HEADER_FALLBACK_ENABLED: ${AUTH_DEV_HEADER_FALLBACK_ENABLED:-false}
     ports:
       - "5601:80"
