@@ -5,7 +5,17 @@ server {
     root /usr/share/nginx/html;
     index index.html;
 
+    location = /test-web {
+        return 308 /test-web/;
+    }
+
     location = /config.json {
+        default_type application/json;
+        add_header Cache-Control "no-store";
+        return 200 '{"apiBaseUrl":"${MEAL_API_PUBLIC_BASE_URL}","keycloakIssuer":"${KEYCLOAK_ISSUER}","keycloakClientId":"${KEYCLOAK_CLIENT_ID}","keycloakDiscoveryUrl":"${KEYCLOAK_DISCOVERY_URL}","authDevHeaderFallbackEnabled":${AUTH_DEV_HEADER_FALLBACK_ENABLED}}';
+    }
+
+    location = /test-web/config.json {
         default_type application/json;
         add_header Cache-Control "no-store";
         return 200 '{"apiBaseUrl":"${MEAL_API_PUBLIC_BASE_URL}","keycloakIssuer":"${KEYCLOAK_ISSUER}","keycloakClientId":"${KEYCLOAK_CLIENT_ID}","keycloakDiscoveryUrl":"${KEYCLOAK_DISCOVERY_URL}","authDevHeaderFallbackEnabled":${AUTH_DEV_HEADER_FALLBACK_ENABLED}}';
@@ -18,6 +28,11 @@ server {
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location /test-web/ {
+        rewrite ^/test-web/(.*)$ /$1 break;
+        try_files $uri $uri/ /index.html;
     }
 
     location / {

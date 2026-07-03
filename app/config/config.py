@@ -72,6 +72,15 @@ def database_url():
     )
 
 
+def comma_separated_env(name: str, default: str = "") -> list[str]:
+    """쉼표로 구분된 환경 변수 값을 리스트로 반환합니다."""
+    return [
+        item.strip()
+        for item in os.getenv(name, default).split(",")
+        if item.strip()
+    ]
+
+
 class Config:
     """FastAPI 설정 값을 관리하는 클래스
 
@@ -96,6 +105,10 @@ class Config:
     DATABASE_URL = database_url()
     TIMEZONE = os.getenv("TIMEZONE", "Asia/Seoul")
     TZ = timezone(TIMEZONE)
+    CORS_ALLOW_ORIGINS = comma_separated_env(
+        "CORS_ALLOW_ORIGINS",
+        "http://localhost:5601,http://127.0.0.1:5601,https://mymoo.quanect.kr",
+    )
 
     MIN_TEST_USERS = 2
     KC_SERVER_URL = os.getenv("KC_SERVER_URL", "https://auth.quanect.kr/")

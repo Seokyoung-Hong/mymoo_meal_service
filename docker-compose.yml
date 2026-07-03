@@ -23,7 +23,7 @@ services:
       context: ./test-meal-web
     restart: always
     environment:
-      MEAL_API_PUBLIC_BASE_URL: ${TEST_MEAL_WEB_API_BASE_URL:-/meal-api}
+      MEAL_API_PUBLIC_BASE_URL: ${TEST_MEAL_WEB_API_BASE_URL:-https://mymoo.quanect.kr/meal}
       MEAL_API_UPSTREAM: ${TEST_MEAL_WEB_API_UPSTREAM:-mymoo-meal-service:80}
       KEYCLOAK_ISSUER: ${TEST_MEAL_WEB_KEYCLOAK_ISSUER:-https://auth.quanect.kr/realms/Sandori}
       KEYCLOAK_CLIENT_ID: ${TEST_MEAL_WEB_KEYCLOAK_CLIENT_ID:-mymoo-test-web}

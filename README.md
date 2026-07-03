@@ -42,8 +42,9 @@ docker compose down
 개발/검증용 웹 포털은 `test-meal-web` 독립 폴더에 분리되어 있습니다.
 
 - 루트 compose 실행: `docker compose up -d --build test-meal-web`
-- 웹 URL: `http://localhost:5601`
-- 웹 컨테이너가 `/meal-api/*`를 `mymoo-meal-service:80`으로 프록시합니다.
+- 웹 URL: `http://localhost:5601` 또는 프록시 배포 시 `https://mymoo.quanect.kr/test-web/`
+- 기본 설정에서는 웹이 외부 API `https://mymoo.quanect.kr/meal`로 직접 요청합니다.
+- 로컬 백엔드를 검증하려면 `TEST_MEAL_WEB_API_BASE_URL=/meal-api` 및 `TEST_MEAL_WEB_API_UPSTREAM=mymoo-meal-service:80`을 지정해 `/meal-api/*` 프록시를 사용할 수 있습니다.
 - Keycloak 로그인은 Authorization Code + PKCE로 동작합니다.
 - 웹 로그인 client 기본값은 `mymoo-test-web`이며, 루트 compose에서는 `TEST_MEAL_WEB_KEYCLOAK_CLIENT_ID`로 변경할 수 있습니다.
 - 로컬 개발에서 `X-User-ID` 모드를 쓰려면 Meal Service `.env`에 `ENV=local` 및 `AUTH_DEV_HEADER_FALLBACK_ENABLED=true`를 설정합니다.
@@ -55,6 +56,7 @@ docker compose down
 - `ENV`: `local`, `test`, `development`, `production`
 - `DEBUG`: 디버그 로깅 활성화 여부
 - `AUTH_DEV_HEADER_FALLBACK_ENABLED`: 기본값 `false`, 운영에서 활성화 금지
+- `CORS_ALLOW_ORIGINS`: 브라우저 직접 호출을 허용할 origin CSV, 예: `http://localhost:5601,https://mymoo.quanect.kr`
 - `KEYCLOAK_DISCOVERY_URL`: OIDC discovery URL
 - `JWT_ISSUER`: 기대 issuer
 - `JWT_AUDIENCE`: 기대 audience

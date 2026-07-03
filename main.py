@@ -3,6 +3,7 @@
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 
 from app.config import logger, Config
@@ -45,6 +46,13 @@ async def lifespan(app: FastAPI):
 
 # lifespan 적용
 app = FastAPI(lifespan=lifespan, root_path="/meal")
+if Config.CORS_ALLOW_ORIGINS:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=Config.CORS_ALLOW_ORIGINS,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 add_request_id_middleware(app)
 
 # 라우터 추가

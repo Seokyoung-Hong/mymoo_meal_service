@@ -4,7 +4,7 @@ services:
     build: .
     restart: always
     environment:
-      MEAL_API_PUBLIC_BASE_URL: ${MEAL_API_PUBLIC_BASE_URL:-/meal-api}
+      MEAL_API_PUBLIC_BASE_URL: ${MEAL_API_PUBLIC_BASE_URL:-https://mymoo.quanect.kr/meal}
       MEAL_API_UPSTREAM: ${MEAL_API_UPSTREAM:-host.docker.internal:5600}
       KEYCLOAK_ISSUER: ${KEYCLOAK_ISSUER:-https://auth.quanect.kr/realms/Sandori}
       KEYCLOAK_CLIENT_ID: ${KEYCLOAK_CLIENT_ID:-mymoo-test-web}

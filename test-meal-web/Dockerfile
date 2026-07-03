@@ -1,6 +1,6 @@
 FROM nginx:1.27-alpine
 
-ENV MEAL_API_PUBLIC_BASE_URL=/meal-api \
+ENV MEAL_API_PUBLIC_BASE_URL=https://mymoo.quanect.kr/meal \
     MEAL_API_UPSTREAM=mymoo-meal-service:80 \
     KEYCLOAK_ISSUER=https://auth.quanect.kr/realms/Sandori \
     KEYCLOAK_CLIENT_ID=mymoo-test-web \

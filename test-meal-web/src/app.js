@@ -9,11 +9,20 @@ const persistedSettingKeys = [
   "devUserId",
 ];
 
+const defaultApiBaseUrl = "https://mymoo.quanect.kr/meal";
+
+function defaultRedirectUri() {
+  const path = window.location.pathname.endsWith("/")
+    ? window.location.pathname
+    : `${window.location.pathname}/`;
+  return `${window.location.origin}${path}`;
+}
+
 const state = {
-  apiBaseUrl: "/meal-api",
+  apiBaseUrl: defaultApiBaseUrl,
   keycloakIssuer: "",
   keycloakClientId: "",
-  redirectUri: window.location.origin + window.location.pathname,
+  redirectUri: defaultRedirectUri(),
   authMode: "bearer",
   devUserId: "",
   accessToken: "",
@@ -69,6 +78,18 @@ function persistSettings() {
   localStorage.setItem(storageKey, JSON.stringify(settings));
 }
 
+function normalizeApiBaseUrl(value) {
+  return (value || defaultApiBaseUrl)
+    .trim()
+    .replace(/\/$/, "")
+    .replace("https://nymoo.quanect.kr/meal", defaultApiBaseUrl);
+}
+
+function normalizeRedirectUri(value) {
+  const uri = (value || defaultRedirectUri()).trim();
+  return uri.endsWith("/test-web") ? `${uri}/` : uri;
+}
+
 function persistSessionAuth() {
   if (!state.accessToken && !state.idToken && !state.refreshToken) {
     sessionStorage.removeItem(authStorageKey);
@@ -86,10 +107,10 @@ function persistSessionAuth() {
 }
 
 function saveState() {
-  state.apiBaseUrl = $("apiBaseUrl").value.trim();
+  state.apiBaseUrl = normalizeApiBaseUrl($("apiBaseUrl").value);
   state.keycloakIssuer = $("keycloakIssuer").value.trim().replace(/\/$/, "");
   state.keycloakClientId = $("keycloakClientId").value.trim();
-  state.redirectUri = $("redirectUri").value.trim();
+  state.redirectUri = normalizeRedirectUri($("redirectUri").value);
   state.devUserId = $("devUserId").value.trim();
   state.accessToken = $("accessToken").value.trim();
   persistSettings();
@@ -155,7 +176,7 @@ async function loadServerConfig() {
       return;
     }
     const config = await response.json();
-    state.apiBaseUrl = config.apiBaseUrl || state.apiBaseUrl || "";
+    state.apiBaseUrl = normalizeApiBaseUrl(config.apiBaseUrl || state.apiBaseUrl);
     state.keycloakIssuer = config.keycloakIssuer || state.keycloakIssuer || "";
     state.keycloakClientId = config.keycloakClientId || state.keycloakClientId || "";
   } catch {
@@ -343,7 +364,7 @@ function queryString(params) {
 }
 
 function apiUrl(path, params = {}) {
-  const base = $("apiBaseUrl").value.trim().replace(/\/$/, "");
+  const base = normalizeApiBaseUrl($("apiBaseUrl").value);
   return `${base}${path}${queryString(params)}`;
 }
 
