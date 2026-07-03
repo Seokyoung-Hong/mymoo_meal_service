@@ -21,6 +21,11 @@ server {
         return 200 '{"apiBaseUrl":"${MEAL_API_PUBLIC_BASE_URL}","keycloakIssuer":"${KEYCLOAK_ISSUER}","keycloakClientId":"${KEYCLOAK_CLIENT_ID}","keycloakDiscoveryUrl":"${KEYCLOAK_DISCOVERY_URL}","authDevHeaderFallbackEnabled":${AUTH_DEV_HEADER_FALLBACK_ENABLED}}';
     }
 
+    location ~ ^/test-web/(.+\.(?:css|js|map|png|jpg|jpeg|gif|svg|ico|webp|woff|woff2))$ {
+        rewrite ^/test-web/(.*)$ /$1 break;
+        try_files $uri =404;
+    }
+
     location /meal-api/ {
         proxy_pass http://${MEAL_API_UPSTREAM}/;
         proxy_http_version 1.1;
