@@ -10,6 +10,8 @@ const persistedSettingKeys = [
 ];
 
 const defaultApiBaseUrl = "https://mymoo.quanect.kr/meal";
+const defaultKeycloakIssuer = "https://auth.quanect.kr/realms/Mymoo";
+const defaultKeycloakClientId = "mymoo-test-web";
 
 function defaultRedirectUri() {
   const path = window.location.pathname.endsWith("/")
@@ -20,8 +22,8 @@ function defaultRedirectUri() {
 
 const state = {
   apiBaseUrl: defaultApiBaseUrl,
-  keycloakIssuer: "",
-  keycloakClientId: "",
+  keycloakIssuer: defaultKeycloakIssuer,
+  keycloakClientId: defaultKeycloakClientId,
   redirectUri: defaultRedirectUri(),
   authMode: "bearer",
   devUserId: "",
@@ -90,6 +92,17 @@ function normalizeRedirectUri(value) {
   return uri.endsWith("/test-web") ? `${uri}/` : uri;
 }
 
+function normalizeKeycloakIssuer(value) {
+  return (value || defaultKeycloakIssuer)
+    .trim()
+    .replace(/\/$/, "")
+    .replace("https://auth.quanect.kr/realms/Sandori", defaultKeycloakIssuer);
+}
+
+function normalizeKeycloakClientId(value) {
+  return (value || defaultKeycloakClientId).trim();
+}
+
 function persistSessionAuth() {
   if (!state.accessToken && !state.idToken && !state.refreshToken) {
     sessionStorage.removeItem(authStorageKey);
@@ -108,8 +121,8 @@ function persistSessionAuth() {
 
 function saveState() {
   state.apiBaseUrl = normalizeApiBaseUrl($("apiBaseUrl").value);
-  state.keycloakIssuer = $("keycloakIssuer").value.trim().replace(/\/$/, "");
-  state.keycloakClientId = $("keycloakClientId").value.trim();
+  state.keycloakIssuer = normalizeKeycloakIssuer($("keycloakIssuer").value);
+  state.keycloakClientId = normalizeKeycloakClientId($("keycloakClientId").value);
   state.redirectUri = normalizeRedirectUri($("redirectUri").value);
   state.devUserId = $("devUserId").value.trim();
   state.accessToken = $("accessToken").value.trim();
@@ -177,8 +190,12 @@ async function loadServerConfig() {
     }
     const config = await response.json();
     state.apiBaseUrl = normalizeApiBaseUrl(config.apiBaseUrl || state.apiBaseUrl);
-    state.keycloakIssuer = config.keycloakIssuer || state.keycloakIssuer || "";
-    state.keycloakClientId = config.keycloakClientId || state.keycloakClientId || "";
+    state.keycloakIssuer = normalizeKeycloakIssuer(
+      config.keycloakIssuer || state.keycloakIssuer,
+    );
+    state.keycloakClientId = normalizeKeycloakClientId(
+      config.keycloakClientId || state.keycloakClientId,
+    );
   } catch {
     // The portal can still run from a file or another static server.
   }
