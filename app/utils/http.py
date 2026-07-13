@@ -31,7 +31,7 @@ class XUserIDClient(AsyncClient):
 
 
 async def get_async_client(
-    x_user_id: Optional[str] = Header(None),
+    x_user_id: Optional[str] = Header(None, include_in_schema=False),
 ) -> AsyncGenerator[XUserIDClient, None]:
     """비동기 HTTP 클라이언트를 생성하고 반환합니다.
 

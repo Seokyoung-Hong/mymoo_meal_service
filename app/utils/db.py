@@ -3,7 +3,8 @@
 from datetime import datetime
 from typing import Annotated
 
-from fastapi import Depends, Header, HTTPException
+from fastapi import Depends, Header, HTTPException, Security
+from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
@@ -19,6 +20,7 @@ from app.schemas.users import AdminUserSchema
 from app.utils.auth import (
     AuthenticatedPrincipal,
     bearer_unauthorized,
+    bearer_auth,
     dev_header_fallback_allowed,
     principal_from_authorization,
 )
@@ -133,8 +135,12 @@ async def get_or_create_user(
 
 async def get_current_user(
     db: Annotated[AsyncSession, Depends(get_db)],
-    authorization: str | None = Header(None),
-    x_user_id: str = Header(None),
+    authorization: str | None = Header(None, include_in_schema=False),
+    x_user_id: str | None = Header(None, include_in_schema=False),
+    bearer_credentials: Annotated[
+        HTTPAuthorizationCredentials | None,
+        Security(bearer_auth),
+    ] = None,
 ) -> User:
     """Bearer JWT를 검증하고 비동기 방식으로 User 객체를 반환합니다.
 
@@ -149,6 +155,7 @@ async def get_current_user(
     Raises:
         HTTPException: X-User-ID 헤더가 없거나 사용자가 존재하지 않는 경우
     """
+    _ = bearer_credentials
     if authorization:
         principal = await principal_from_authorization(authorization)
         user = await get_or_create_user(principal.user_id, db)
@@ -179,8 +186,12 @@ def _attach_auth_principal(user: User, principal: AuthenticatedPrincipal) -> Non
 
 async def get_admin_user(
     db: Annotated[AsyncSession, Depends(get_db)],
-    authorization: str | None = Header(None),
-    x_user_id: str = Header(None),
+    authorization: str | None = Header(None, include_in_schema=False),
+    x_user_id: str | None = Header(None, include_in_schema=False),
+    bearer_credentials: Annotated[
+        HTTPAuthorizationCredentials | None,
+        Security(bearer_auth),
+    ] = None,
 ) -> AdminUserSchema:
     """현재 사용자가 관리자 권한을 가지고 있는지 확인하고 UserSchema 객체를 반환합니다.
 
@@ -195,6 +206,7 @@ async def get_admin_user(
     Raises:
         HTTPException: X-User-ID 헤더가 없거나 사용자가 존재하지 않는 경우
     """
+    _ = bearer_credentials
     user = await get_current_user(db, authorization, x_user_id)
     admin_user = await check_admin_user(user)
     if not admin_user.is_admin:

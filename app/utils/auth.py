@@ -8,7 +8,10 @@ from time import time
 from typing import Any
 
 import httpx
-from fastapi import HTTPException
+from typing import Annotated
+
+from fastapi import Header, HTTPException
+from fastapi.security import HTTPBearer
 from jwcrypto import jwk, jwt  # type: ignore[import-untyped]
 from jwcrypto.common import (  # type: ignore[import-untyped]
     JWException,
@@ -21,6 +24,28 @@ from app.config import Config, logger
 
 BEARER_CHALLENGE = "Bearer"
 JWKS_CACHE_TTL_SECONDS = 300
+bearer_auth = HTTPBearer(
+    auto_error=False,
+    scheme_name="BearerAuth",
+    bearerFormat="JWT",
+)
+
+
+async def optional_metrics_x_user_id(
+    x_user_id: Annotated[
+        str | None,
+        Header(
+            alias="X-User-ID",
+            description=(
+                "Optional untrusted user identifier for anonymous usage metrics only. "
+                "This value is not authentication metadata and is never used for "
+                "authorization."
+            ),
+        ),
+    ] = None,
+) -> str | None:
+    """Expose optional anonymous metrics metadata without treating it as auth."""
+    return x_user_id
 
 
 @dataclass
