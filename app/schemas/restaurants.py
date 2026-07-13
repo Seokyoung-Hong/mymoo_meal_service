@@ -118,6 +118,12 @@ class RestaurantResponse(RestaurantSchema):
     is_active: bool = True
 
 
+class RestaurantPublicResponse(RestaurantSchema):
+    """Public restaurant response without owner or activation metadata."""
+
+    id: int
+
+
 class RestaurantStatusUpdateRequest(BaseModel):
     """PATCH /restaurants/{id}/status 요청 바디를 나타내는 클래스입니다."""
 

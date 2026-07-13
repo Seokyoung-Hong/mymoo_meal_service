@@ -20,6 +20,7 @@ from app.schemas.restaurants import (
     Location,
     RestaurantSchema,
     RestaurantResponse,
+    RestaurantPublicResponse,
     TimeRange,
 )
 from app.schemas.restaurants import RestaurantSubmission as RestaurantSubmissionSchema
@@ -183,6 +184,33 @@ def build_restaurant_schema(
         owner=restaurant.owner,
         owner_user_id=owner_user_id,
         is_active=restaurant.is_active,
+        establishment_type=cast(EstablishmentType, restaurant.establishment_type),
+        price=restaurant.price,
+        location=Location(
+            is_campus=restaurant.is_campus,
+            building=restaurant.building_name,
+            map_links=build_map_links(
+                restaurant.naver_map_link, restaurant.kakao_map_link
+            ),
+            latitude=restaurant.latitude,
+            longitude=restaurant.longitude,
+        ),
+        opening_time=operating_hours.get("opening_time"),
+        break_time=operating_hours.get("break_time"),
+        breakfast_time=operating_hours.get("breakfast_time"),
+        lunch_time=operating_hours.get("lunch_time"),
+        dinner_time=operating_hours.get("dinner_time"),
+    )
+
+
+def build_public_restaurant_schema(
+    restaurant: Restaurant,
+    operating_hours: dict[str, TimeRange],
+) -> RestaurantPublicResponse:
+    """Build sanitized public restaurant response data."""
+    return RestaurantPublicResponse(
+        id=restaurant.id,
+        name=restaurant.name,
         establishment_type=cast(EstablishmentType, restaurant.establishment_type),
         price=restaurant.price,
         location=Location(
