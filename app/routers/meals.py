@@ -56,6 +56,7 @@ from app.schemas.meals import MealType as MealTypeSchema
 from app.schemas.pagination import CustomPage
 from app.services.audit import AuditLogEntry, request_id_from_request
 from app.utils.http import get_async_client
+from app.utils.auth import optional_metrics_x_user_id
 from app.utils.db import get_current_user, get_db
 from app.utils.meals import (
     apply_date_filter,
@@ -108,7 +109,11 @@ def _meal_response(meal: Meal) -> MealResponse:
     )
 
 
-@router.get("", response_model=CustomPage[MealResponse])
+@router.get(
+    "",
+    response_model=CustomPage[MealResponse],
+    dependencies=[Depends(optional_metrics_x_user_id)],
+)
 async def list_meals(
     db: Annotated[AsyncSession, Depends(get_db)],
     params: Annotated[Params, Depends()],
@@ -176,7 +181,11 @@ async def list_meals(
     return paginate(response_data, params)
 
 
-@router.get("/today", response_model=CustomPage[MealResponse])
+@router.get(
+    "/today",
+    response_model=CustomPage[MealResponse],
+    dependencies=[Depends(optional_metrics_x_user_id)],
+)
 async def list_today_meals(
     db: Annotated[AsyncSession, Depends(get_db)],
     params: Annotated[Params, Depends()],
@@ -213,7 +222,11 @@ async def list_today_meals(
     return paginate(response_data, params)
 
 
-@router.get("/latest", response_model=CustomPage[MealResponse])
+@router.get(
+    "/latest",
+    response_model=CustomPage[MealResponse],
+    dependencies=[Depends(optional_metrics_x_user_id)],
+)
 async def latest_meals_by_restaurant(
     db: Annotated[AsyncSession, Depends(get_db)],
     params: Annotated[Params, Depends()],
@@ -282,7 +295,11 @@ async def latest_meals_by_restaurant(
     return paginate(response_data, params)
 
 
-@router.get("/{meal_id:int}", response_model=BaseSchema[MealResponse])
+@router.get(
+    "/{meal_id:int}",
+    response_model=BaseSchema[MealResponse],
+    dependencies=[Depends(optional_metrics_x_user_id)],
+)
 async def get_meal(
     meal_id: int,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -327,7 +344,9 @@ async def get_meal(
 
 
 @router.get(
-    "/restaurant/{restaurant_id}/latest", response_model=CustomPage[MealResponse]
+    "/restaurant/{restaurant_id}/latest",
+    response_model=CustomPage[MealResponse],
+    dependencies=[Depends(optional_metrics_x_user_id)],
 )
 async def latest_meal_by_restaurant(
     restaurant_id: int,
@@ -389,7 +408,11 @@ async def latest_meal_by_restaurant(
     return paginate(response_data, params)
 
 
-@router.get("/restaurant/{restaurant_id}", response_model=CustomPage[MealResponse])
+@router.get(
+    "/restaurant/{restaurant_id}",
+    response_model=CustomPage[MealResponse],
+    dependencies=[Depends(optional_metrics_x_user_id)],
+)
 async def list_meals_by_restaurant(
     restaurant_id: int,
     db: Annotated[AsyncSession, Depends(get_db)],

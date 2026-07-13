@@ -32,6 +32,7 @@ from app.services.pricing import (
     pricing_policy_to_dict,
     resolve_price,
 )
+from app.utils.auth import optional_metrics_x_user_id
 from app.utils.db import get_current_user, get_db
 from app.utils.restaurants import get_restaurant_or_404, get_restaurant_with_permission
 
@@ -75,7 +76,10 @@ async def get_pricing_policy_or_404(
     return policy
 
 
-@router.get("/{restaurant_id}/price")
+@router.get(
+    "/{restaurant_id}/price",
+    dependencies=[Depends(optional_metrics_x_user_id)],
+)
 async def get_restaurant_price(
     restaurant_id: int,
     restaurant: Annotated[Restaurant, Depends(get_restaurant_or_404)],
