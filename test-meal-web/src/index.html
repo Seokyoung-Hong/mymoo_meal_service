@@ -287,15 +287,7 @@
                   <button data-action="ownerRestaurants" type="button">내 식당 조회</button>
                 </div>
                 <div class="form-grid wide">
-                  <label>Owner user_id <input id="ownerUserId" /></label>
-                  <label>Manager user_id <input id="managerUserId" /></label>
                   <label>식당 ID <input id="ownerRestaurantId" type="number" min="1" /></label>
-                  <label>비활성 포함
-                    <select id="includeInactive">
-                      <option value="false">false</option>
-                      <option value="true">true</option>
-                    </select>
-                  </label>
                 </div>
                 <div class="button-row">
                   <button data-action="ownerRestaurantDetail" type="button">식당 상세</button>
@@ -453,8 +445,16 @@
                       <option value="false">false</option>
                     </select>
                   </label>
+                  <label>조회 시 비활성 포함
+                    <select id="adminIncludeInactive">
+                      <option value="false">false</option>
+                      <option value="true">true</option>
+                    </select>
+                  </label>
                 </div>
                 <div class="button-row">
+                  <button data-action="adminListRestaurants" type="button">전체 식당 조회</button>
+                  <button data-action="adminRestaurantDetail" type="button">식당 상세</button>
                   <button data-action="updateRestaurant" type="button">식당 정보 수정</button>
                   <button data-action="updateRestaurantStatus" type="button">활성 상태 변경</button>
                 </div>

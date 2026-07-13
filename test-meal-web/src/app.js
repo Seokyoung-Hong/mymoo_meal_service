@@ -700,17 +700,17 @@ const actions = {
       `/restaurants/requests/${requireNumber("ownerRequestLookupId", "신청 ID")}`,
     ),
   ownerRestaurants: () =>
-    callApi("GET", "/restaurants/", {
+    callApi("GET", "/restaurants/mine", {
       params: {
-        owner_user_id: $("ownerUserId").value || currentUserId(),
-        manager_user_id: $("managerUserId").value,
-        include_inactive: $("includeInactive").value,
         page: 1,
         size: 50,
       },
     }),
   ownerRestaurantDetail: () =>
-    callApi("GET", `/restaurants/${requireNumber("ownerRestaurantId", "식당 ID")}`),
+    callApi(
+      "GET",
+      `/restaurants/mine/${requireNumber("ownerRestaurantId", "식당 ID")}`,
+    ),
   deleteRestaurant: () =>
     callApi("DELETE", `/restaurants/${requireNumber("ownerRestaurantId", "식당 ID")}`),
   createMeal: () =>
@@ -807,6 +807,20 @@ const actions = {
     ),
   createRestaurant: () =>
     callApi("POST", "/restaurants/", { body: restaurantPayload("adminRestaurant") }),
+  adminListRestaurants: () =>
+    callApi("GET", "/admin/restaurants/", {
+      params: {
+        owner_user_id: $("adminRestaurantOwnerUserId").value,
+        include_inactive: $("adminIncludeInactive").value,
+        page: 1,
+        size: 50,
+      },
+    }),
+  adminRestaurantDetail: () =>
+    callApi(
+      "GET",
+      `/admin/restaurants/${requireNumber("adminRestaurantId", "식당 ID")}`,
+    ),
   updateRestaurant: () =>
     callApi("PATCH", `/restaurants/${requireNumber("adminRestaurantId", "식당 ID")}`, {
       body: restaurantPayload("adminRestaurant"),
