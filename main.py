@@ -7,7 +7,13 @@ from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 
 from app.config import logger, Config
-from app.routers import meals_router, pricing_router, restaurants_router, users_router
+from app.routers import (
+    meals_router,
+    pricing_router,
+    restaurants_router,
+    users_router,
+    worker_router,
+)
 from app.utils.lifespan import (
     sync_meal_types,
     ensure_service_account_in_db,
@@ -60,6 +66,7 @@ app.include_router(meals_router)
 app.include_router(pricing_router)
 app.include_router(restaurants_router)
 app.include_router(users_router)
+app.include_router(worker_router)
 
 
 @app.get("/")

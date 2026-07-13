@@ -3,6 +3,12 @@
 from app.models.meals import NonEscapedJSON, MealType, Meal
 from app.models.audit import AuditLog
 from app.models.pricing import RestaurantPricingPolicy
+from app.models.worker import (
+    CashTransaction,
+    CashWallet,
+    MealTicket,
+    MealTicketUsageRequest,
+)
 from app.models.restaurants import (
     Restaurant,
     RestaurantSubmission,
@@ -18,6 +24,10 @@ __all__ = [
     "Meal",
     "AuditLog",
     "RestaurantPricingPolicy",
+    "CashTransaction",
+    "CashWallet",
+    "MealTicket",
+    "MealTicketUsageRequest",
     "Restaurant",
     "RestaurantSubmission",
     "OperatingHours",

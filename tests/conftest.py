@@ -33,6 +33,7 @@ from app.routers import (
     pricing_router,
     restaurants_router,
     users_router,
+    worker_router,
 )  # noqa: E402
 from app.utils import db as db_utils  # noqa: E402
 from app.utils import http as http_utils  # noqa: E402
@@ -148,6 +149,7 @@ async def test_app(
     app.include_router(pricing_router)
     app.include_router(restaurants_router)
     app.include_router(users_router)
+    app.include_router(worker_router)
 
     @app.get("/")
     async def root() -> dict[str, str]:

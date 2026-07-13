@@ -21,6 +21,10 @@
           <span class="nav-icon">U</span>
           사용자 사이트
         </button>
+        <button class="nav-item" data-mode="worker" type="button">
+          <span class="nav-icon">W</span>
+          근로자 앱
+        </button>
         <button class="nav-item" data-mode="owner" type="button">
           <span class="nav-icon">O</span>
           식당주인 사이트
@@ -180,6 +184,69 @@
 
             </div>
 
+            <div class="mode-view" id="workerView">
+              <div class="section-title">
+                <h2>근로자 앱</h2>
+                <p>식권 등록, 사용 요청, 내역 조회, mock 카드 충전과 캐시 잔액을 확인합니다.</p>
+              </div>
+
+              <div class="grid two">
+                <section class="panel">
+                  <div class="panel-heading">
+                    <h3>식권 등록/조회</h3>
+                    <button data-action="listWorkerTickets" type="button">식권 목록</button>
+                  </div>
+                  <div class="form-grid">
+                    <label>식권 코드 <input id="workerTicketCode" value="TICKET-001" /></label>
+                    <label>금액 <input id="workerTicketAmount" type="number" min="1" value="5000" /></label>
+                    <label>만료일 <input id="workerTicketExpiresOn" type="date" /></label>
+                  </div>
+                  <div class="button-row">
+                    <button data-action="registerWorkerTicket" type="button">식권 등록</button>
+                  </div>
+                </section>
+
+                <section class="panel">
+                  <div class="panel-heading">
+                    <h3>현금성 캐시</h3>
+                    <button data-action="getWorkerCashBalance" type="button">잔액 조회</button>
+                  </div>
+                  <div class="form-grid">
+                    <label>충전 금액 <input id="workerCashChargeAmount" type="number" min="1" value="3000" /></label>
+                    <label>카드 끝 4자리 <input id="workerCardLast4" maxlength="4" value="1234" /></label>
+                  </div>
+                  <div class="button-row">
+                    <button data-action="chargeWorkerCash" type="button">mock 카드 충전</button>
+                    <button data-action="listWorkerCashTransactions" type="button">캐시 내역</button>
+                  </div>
+                </section>
+              </div>
+
+              <section class="panel">
+                <div class="panel-heading">
+                  <h3>식권 사용 요청</h3>
+                  <button data-action="listWorkerTicketUsageRequests" type="button">사용 내역</button>
+                </div>
+                <div class="form-grid wide">
+                  <label>식권 코드 <input id="workerUseTicketCode" value="TICKET-001" /></label>
+                  <label>식당 ID <input id="workerUseRestaurantId" type="number" min="1" /></label>
+                  <label>식사 유형
+                    <select id="workerUseMealType">
+                      <option value="">없음</option>
+                      <option value="breakfast">breakfast</option>
+                      <option value="lunch">lunch</option>
+                      <option value="dinner">dinner</option>
+                    </select>
+                  </label>
+                  <label>제공일 <input id="workerUseDate" type="date" /></label>
+                  <label>직접 금액 <input id="workerUseMealPrice" type="number" min="1" placeholder="가격 정책 없을 때" /></label>
+                </div>
+                <div class="button-row">
+                  <button data-action="createWorkerTicketUsageRequest" type="button">사용 요청</button>
+                </div>
+              </section>
+            </div>
+
             <div class="mode-view" id="ownerView">
               <div class="section-title">
                 <h2>식당주인 사이트</h2>
@@ -316,6 +383,26 @@
                   <button data-action="updatePricing" type="button">정책 수정</button>
                   <button data-action="updatePricingStatus" type="button">활성 상태 변경</button>
                   <button class="danger-button" data-action="deletePricing" type="button">정책 삭제</button>
+                </div>
+              </section>
+
+              <section class="panel">
+                <div class="panel-heading">
+                  <h3>식권 사용 요청 승인</h3>
+                  <button data-action="listRestaurantTicketUsageRequests" type="button">요청 목록</button>
+                </div>
+                <div class="form-grid wide">
+                  <label>요청 상태
+                    <select id="ownerTicketUsageStatus">
+                      <option value="pending">pending</option>
+                      <option value="used">used</option>
+                      <option value="">전체</option>
+                    </select>
+                  </label>
+                  <label>사용 요청 ID <input id="ownerTicketUsageRequestId" type="number" min="1" /></label>
+                </div>
+                <div class="button-row">
+                  <button data-action="approveRestaurantTicketUsageRequest" type="button">사용 승인</button>
                 </div>
               </section>
             </div>

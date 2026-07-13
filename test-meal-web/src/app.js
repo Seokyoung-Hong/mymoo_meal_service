@@ -541,6 +541,42 @@ function pricingPayload() {
   return payload;
 }
 
+function workerTicketPayload() {
+  return {
+    code: $("workerTicketCode").value.trim(),
+    amount: Number($("workerTicketAmount").value),
+    expires_on: $("workerTicketExpiresOn").value || today(),
+  };
+}
+
+function workerCardChargePayload() {
+  const payload = {
+    amount: Number($("workerCashChargeAmount").value),
+  };
+  const cardLast4 = $("workerCardLast4").value.trim();
+  if (cardLast4) {
+    payload.card_last4 = cardLast4;
+  }
+  return payload;
+}
+
+function workerTicketUsagePayload() {
+  const payload = {
+    ticket_code: $("workerUseTicketCode").value.trim(),
+    restaurant_id: requireNumber("workerUseRestaurantId", "restaurant ID"),
+    served_date: $("workerUseDate").value || today(),
+  };
+  const mealType = $("workerUseMealType").value;
+  const mealPrice = $("workerUseMealPrice").value;
+  if (mealType) {
+    payload.meal_type = mealType;
+  }
+  if (mealPrice) {
+    payload.meal_price = Number(mealPrice);
+  }
+  return payload;
+}
+
 const actions = {
   health: () => callApi("GET", "/health", { auth: false }),
   listUsers: () => callApi("GET", "/users/"),
@@ -625,6 +661,21 @@ const actions = {
       },
       auth: false,
     }),
+  registerWorkerTicket: () =>
+    callApi("POST", "/worker/tickets", { body: workerTicketPayload() }),
+  listWorkerTickets: () => callApi("GET", "/worker/tickets"),
+  getWorkerCashBalance: () => callApi("GET", "/worker/cash/balance"),
+  chargeWorkerCash: () =>
+    callApi("POST", "/worker/cash/card-charges", {
+      body: workerCardChargePayload(),
+    }),
+  listWorkerCashTransactions: () => callApi("GET", "/worker/cash/transactions"),
+  createWorkerTicketUsageRequest: () =>
+    callApi("POST", "/worker/ticket-usage-requests", {
+      body: workerTicketUsagePayload(),
+    }),
+  listWorkerTicketUsageRequests: () =>
+    callApi("GET", "/worker/ticket-usage-requests"),
   ownerSubmitRestaurantRequest: () =>
     callApi("POST", "/restaurants/requests", { body: requestPayload("ownerRequest") }),
   listRequests: () =>
@@ -729,6 +780,20 @@ const actions = {
         "정책 ID",
       )}`,
     ),
+  listRestaurantTicketUsageRequests: () =>
+    callApi(
+      "GET",
+      `/restaurants/${requireNumber("ownerRestaurantId", "restaurant ID")}/ticket-usage-requests`,
+      { params: { status: $("ownerTicketUsageStatus").value } },
+    ),
+  approveRestaurantTicketUsageRequest: () =>
+    callApi(
+      "POST",
+      `/restaurants/${requireNumber("ownerRestaurantId", "restaurant ID")}/ticket-usage-requests/${requireNumber(
+        "ownerTicketUsageRequestId",
+        "ticket usage request ID",
+      )}/approval`,
+    ),
   approveRequest: () =>
     callApi(
       "POST",
@@ -816,6 +881,10 @@ async function init() {
   $("ownerMealDate").value ||= today();
   $("priceServedDate").value ||= today();
   $("policyDate").value ||= today();
+  const ticketExpiry = new Date();
+  ticketExpiry.setFullYear(ticketExpiry.getFullYear() + 1);
+  $("workerTicketExpiresOn").value ||= ticketExpiry.toISOString().slice(0, 10);
+  $("workerUseDate").value ||= today();
   await completeLoginIfNeeded();
   updateAuthStatus();
 }

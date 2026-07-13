@@ -10,5 +10,12 @@ from .meals import router as meals_router
 from .pricing import router as pricing_router
 from .restaurants import router as restaurants_router
 from .users import router as users_router
+from .worker import router as worker_router
 
-__all__ = ["meals_router", "pricing_router", "restaurants_router", "users_router"]
+__all__ = [
+    "meals_router",
+    "pricing_router",
+    "restaurants_router",
+    "users_router",
+    "worker_router",
+]
