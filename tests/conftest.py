@@ -13,7 +13,7 @@ from typing import Any
 import httpx
 import pytest
 import pytest_asyncio
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
@@ -29,6 +29,7 @@ os.environ.setdefault("SERVICE_ACCOUNT_TOKEN", "test-token")
 from app.database import Base
 from app.models import MealType, User  # noqa: E402, F401
 from app.routers import (
+    admin_restaurants_router,
     meals_router,
     pricing_router,
     restaurants_router,
@@ -37,6 +38,7 @@ from app.routers import (
 )  # noqa: E402
 from app.utils import db as db_utils  # noqa: E402
 from app.utils import http as http_utils  # noqa: E402
+from app.utils.auth import optional_metrics_x_user_id  # noqa: E402
 from app.utils.request_id import add_request_id_middleware  # noqa: E402
 
 
@@ -148,14 +150,15 @@ async def test_app(
     app.include_router(meals_router)
     app.include_router(pricing_router)
     app.include_router(restaurants_router)
+    app.include_router(admin_restaurants_router)
     app.include_router(users_router)
     app.include_router(worker_router)
 
-    @app.get("/")
+    @app.get("/", dependencies=[Depends(optional_metrics_x_user_id)])
     async def root() -> dict[str, str]:
         return {"test": "Hello Mymoo"}
 
-    @app.get("/health")
+    @app.get("/health", dependencies=[Depends(optional_metrics_x_user_id)])
     async def health_check() -> dict[str, str]:
         return {"status": "ok"}
 

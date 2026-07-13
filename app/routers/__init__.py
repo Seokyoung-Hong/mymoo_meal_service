@@ -8,11 +8,13 @@ utils.py에는 API 서버에서 사용하는 유틸리티 함수들이 정의되
 
 from .meals import router as meals_router
 from .pricing import router as pricing_router
+from .restaurants import admin_router as admin_restaurants_router
 from .restaurants import router as restaurants_router
 from .users import router as users_router
 from .worker import router as worker_router
 
 __all__ = [
+    "admin_restaurants_router",
     "meals_router",
     "pricing_router",
     "restaurants_router",

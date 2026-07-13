@@ -2,12 +2,13 @@
 
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 
 from app.config import logger, Config
 from app.routers import (
+    admin_restaurants_router,
     meals_router,
     pricing_router,
     restaurants_router,
@@ -18,6 +19,7 @@ from app.utils.lifespan import (
     sync_meal_types,
     ensure_service_account_in_db,
 )
+from app.utils.auth import optional_metrics_x_user_id
 from app.utils.request_id import add_request_id_middleware
 from app.database import init_db
 
@@ -65,18 +67,19 @@ add_request_id_middleware(app)
 app.include_router(meals_router)
 app.include_router(pricing_router)
 app.include_router(restaurants_router)
+app.include_router(admin_restaurants_router)
 app.include_router(users_router)
 app.include_router(worker_router)
 
 
-@app.get("/")
+@app.get("/", dependencies=[Depends(optional_metrics_x_user_id)])
 async def root():
     """루트 엔드포인트입니다."""
     logger.info("Root endpoint accessed")
     return {"test": "Hello Mymoo"}
 
 
-@app.get("/health")
+@app.get("/health", dependencies=[Depends(optional_metrics_x_user_id)])
 async def health_check():
     """헬스 체크 엔드포인트입니다."""
     return {"status": "ok"}

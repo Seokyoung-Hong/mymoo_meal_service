@@ -27,7 +27,7 @@ API 목록:
 from collections.abc import Mapping
 from typing import Annotated, cast
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi_pagination import Params, add_pagination, paginate
 from sqlalchemy import case, delete, false, or_
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -54,6 +54,7 @@ from app.schemas.restaurants import (
     RestaurantCreateRequest,
     RestaurantManagerRequest,
     RestaurantManagerResponse,
+    RestaurantPublicResponse,
     RestaurantRequest,
     RestaurantResponse,
     SubmissionResponse,
@@ -71,9 +72,10 @@ from app.utils.db import (
     check_admin_user,
     resolve_user_ids,
 )
+from app.utils.auth import optional_metrics_x_user_id
 from app.utils.restaurants import (
-    build_location_schema,
     build_operating_hours_entries,
+    build_public_restaurant_schema,
     build_restaurant_model,
     build_restaurant_schema,
     fetch_owner_user_id,
@@ -90,6 +92,20 @@ from app.utils.http import get_async_client
 from app.services.audit import AuditLogEntry, add_audit_log, request_id_from_request
 
 router = APIRouter(prefix="/restaurants", tags=["Restaurant"])
+admin_router = APIRouter(prefix="/admin/restaurants", tags=["Admin Restaurant"])
+
+
+async def _management_restaurant_response(
+    restaurant: Restaurant,
+    db: AsyncSession,
+) -> RestaurantResponse:
+    """Build the full management restaurant response."""
+    operating_hours = await fetch_operating_hours_dict(db, restaurant_id=restaurant.id)
+    return build_restaurant_schema(
+        restaurant,
+        operating_hours,
+        owner_user_id=await fetch_owner_user_id(db, restaurant.owner),
+    )
 
 
 def _restaurant_meal_response(meal: Meal) -> MealResponse:
@@ -665,7 +681,11 @@ async def restaurant_submit_get(
     return BaseSchema[RestaurantSubmissionSchema](data=response_data)
 
 
-@router.get("/{restaurant_id}/meals", response_model=CustomPage[MealResponse])
+@router.get(
+    "/{restaurant_id}/meals",
+    response_model=CustomPage[MealResponse],
+    dependencies=[Depends(optional_metrics_x_user_id)],
+)
 async def list_restaurant_meals(  # noqa: PLR0913
     restaurant_id: int,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -909,7 +929,51 @@ async def restaurant_submit_delete(
     logger.info("Submission with id %s deleted successfully", request_id)
 
 
-@router.get("/{restaurant_id}")
+@router.get("/mine", response_model=CustomPage[RestaurantResponse])
+async def get_my_restaurants(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    params: Annotated[Params, Depends()],
+    current_user: Annotated[User, Depends(get_current_user)],
+) -> CustomPage[RestaurantResponse]:
+    """Return restaurants owned or managed by the current user, including inactive."""
+    result = await db.execute(
+        select(Restaurant)
+        .where(
+            or_(
+                Restaurant.owner == current_user.id,
+                Restaurant.managers.any(id=current_user.id),
+            )
+        )
+        .order_by(Restaurant.id)
+    )
+    restaurants = result.scalars().all()
+    return paginate(
+        [
+            await _management_restaurant_response(restaurant, db)
+            for restaurant in restaurants
+        ],
+        params,
+    )
+
+
+@router.get("/mine/{restaurant_id}", response_model=BaseSchema[RestaurantResponse])
+async def get_my_restaurant(
+    restaurant_id: int,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> BaseSchema[RestaurantResponse]:
+    """Return full restaurant detail for the current owner, manager, or admin."""
+    restaurant = await get_restaurant_with_permission(restaurant_id, db, current_user)
+    return BaseSchema[RestaurantResponse](
+        data=await _management_restaurant_response(restaurant, db)
+    )
+
+
+@router.get(
+    "/{restaurant_id}",
+    response_model=BaseSchema[RestaurantPublicResponse],
+    dependencies=[Depends(optional_metrics_x_user_id)],
+)
 async def get_restaurant(
     restaurant_id: int,
     restaurant: Annotated[Restaurant, Depends(get_restaurant_or_404)],
@@ -939,37 +1003,15 @@ async def get_restaurant(
     operating_hours_dict = await fetch_operating_hours_dict(
         db, restaurant_id=restaurant_id
     )
-    owner_user_id = await fetch_owner_user_id(db, restaurant.owner)
     logger.debug(
         "Found %s operating hours for restaurant id %s",
         len(operating_hours_dict),
         restaurant_id,
     )
 
-    response_data = RestaurantResponse(
-        id=restaurant.id,
-        name=restaurant.name,
-        owner=restaurant.owner,
-        owner_user_id=owner_user_id,
-        is_active=restaurant.is_active,
-        establishment_type=cast(EstablishmentType, restaurant.establishment_type),
-        price=restaurant.price,
-        location=build_location_schema(
-            is_campus=restaurant.is_campus,
-            building=restaurant.building_name,
-            naver_link=restaurant.naver_map_link,
-            kakao_link=restaurant.kakao_map_link,
-            lat=restaurant.latitude,
-            lon=restaurant.longitude,
-        ),
-        opening_time=operating_hours_dict.get("opening_time"),
-        break_time=operating_hours_dict.get("break_time"),
-        breakfast_time=operating_hours_dict.get("breakfast_time"),
-        lunch_time=operating_hours_dict.get("lunch_time"),
-        dinner_time=operating_hours_dict.get("dinner_time"),
-    )
+    response_data = build_public_restaurant_schema(restaurant, operating_hours_dict)
 
-    return BaseSchema[RestaurantResponse](data=response_data)
+    return BaseSchema[RestaurantPublicResponse](data=response_data)
 
 
 @router.patch("/{restaurant_id}/status")
@@ -1226,65 +1268,39 @@ async def delete_restaurant(
         ) from e
 
 
-@router.get("/", response_model=CustomPage[RestaurantResponse])
-async def get_restaurants(  # noqa: C901, PLR0913
+@router.get(
+    "/",
+    response_model=CustomPage[RestaurantPublicResponse],
+    dependencies=[Depends(optional_metrics_x_user_id)],
+)
+async def get_restaurants(
     db: Annotated[AsyncSession, Depends(get_db)],
     params: Annotated[Params, Depends()],
-    owner_user_id: str = Query(None, description="식당 소유자 user_id"),
-    manager_user_id: str = Query(None, description="식당 관리자 user_id"),
-    name: str = Query(None, description="식당 이름 (부분 일치)"),
+    name: Annotated[str | None, Query(description="식당 이름 (부분 일치)")] = None,
     establishment_type: Annotated[
         EstablishmentType | None,
         Query(description=ESTABLISHMENT_TYPE_DESCRIPTION),
     ] = None,
-    is_campus: bool = Query(None, description="캠퍼스 내 식당 여부(true|false)"),
-    include_inactive: bool = Query(False, description="비활성 식당 포함 여부"),
-    authorization: str | None = Header(None),
-    x_user_id: str = Header(None),
-):
-    """모든 식당 데이터를 페이징하여 조회합니다.
+    is_campus: Annotated[
+        bool | None, Query(description="캠퍼스 내 식당 여부(true|false)")
+    ] = None,
+) -> CustomPage[RestaurantPublicResponse]:
+    """활성 식당의 공개 정보를 페이징하여 조회합니다.
+
+    응답은 공개용으로 정제되어 owner, owner_user_id, is_active 같은 관리용
+    필드를 포함하지 않습니다. 비활성 식당은 공개 목록에서 제외됩니다.
 
     Args:
         db (AsyncSession): 비동기 DB 세션 객체입니다.
         params (Params): 페이징 처리를 위한 FastAPI Pagination 객체입니다.
-        owner_user_id (str, optional): 소유자 user_id로 필터링
-        manager_user_id (str, optional): 관리자 user_id로 필터링
         name (str, optional): 식당 이름(부분 일치)으로 필터링
         establishment_type (str, optional): 식당 유형(student|fixed_menu_restaurant|fixed_korean_buffet|variable_korean_buffet)
         is_campus (bool, optional): 캠퍼스 내 식당 여부
-        include_inactive (bool, optional): 비활성 식당 포함 여부
-        authorization (str, optional): 관리자 검증용 Bearer 토큰
-        x_user_id (str, optional): 개발 환경 관리자 검증용 사용자 ID
 
     Returns:
-        CustomPage[RestaurantResponse]: 식당 데이터 목록을 포함한 페이징된 응답 객체입니다.
+        CustomPage[RestaurantPublicResponse]: 공개 식당 데이터 목록을 포함한 페이징된 응답 객체입니다.
     """
-    if include_inactive:
-        await get_admin_user(db, authorization, x_user_id)
-
-    owner_filter_requested = owner_user_id is not None
-    manager_filter_requested = manager_user_id is not None
-
-    owner_id, manager_id = await resolve_user_ids(
-        db,
-        owner_user_id,
-        manager_user_id,
-    )
-    stmt = select(Restaurant)
-    if not include_inactive:
-        stmt = stmt.where(Restaurant.is_active.is_(True))
-
-    user_filters = []
-    if owner_filter_requested and owner_id is not None:
-        user_filters.append(Restaurant.owner == owner_id)
-    if manager_filter_requested and manager_id is not None:
-        user_filters.append(Restaurant.managers.any(id=manager_id))
-
-    if owner_filter_requested or manager_filter_requested:
-        if user_filters:
-            stmt = stmt.where(or_(*user_filters))
-        else:
-            stmt = stmt.where(false())
+    stmt = select(Restaurant).where(Restaurant.is_active.is_(True))
     if name:
         stmt = stmt.where(Restaurant.name.contains(name))
         stmt = stmt.order_by(
@@ -1298,51 +1314,97 @@ async def get_restaurants(  # noqa: C901, PLR0913
     result = await db.execute(stmt)
     restaurants = result.scalars().all()
 
-    restaurant_schemas = []
+    restaurant_schemas: list[RestaurantPublicResponse] = []
     for restaurant in restaurants:
-        operating_hours_result = await db.execute(
-            select(OperatingHours).filter(OperatingHours.restaurant_id == restaurant.id)
+        operating_hours_dict = await fetch_operating_hours_dict(
+            db, restaurant_id=restaurant.id
         )
-        operating_hours = operating_hours_result.scalars().all()
-        operating_hours_dict = {
-            operating_hour.type: TimeRange(
-                start=operating_hour.start_time, end=operating_hour.end_time
-            )
-            for operating_hour in operating_hours
-        }
 
         logger.debug(
             "Found %s operating hours for restaurant id %s",
-            len(operating_hours),
+            len(operating_hours_dict),
             restaurant.id,
         )
 
-        response_data = RestaurantResponse(
-            id=restaurant.id,
-            name=restaurant.name,
-            owner=restaurant.owner,
-            owner_user_id=await fetch_owner_user_id(db, restaurant.owner),
-            is_active=restaurant.is_active,
-            establishment_type=cast(EstablishmentType, restaurant.establishment_type),
-            price=restaurant.price,
-            location=build_location_schema(
-                is_campus=restaurant.is_campus,
-                building=restaurant.building_name,
-                naver_link=restaurant.naver_map_link,
-                kakao_link=restaurant.kakao_map_link,
-                lat=restaurant.latitude,
-                lon=restaurant.longitude,
-            ),
-            opening_time=operating_hours_dict.get("opening_time"),
-            break_time=operating_hours_dict.get("break_time"),
-            breakfast_time=operating_hours_dict.get("breakfast_time"),
-            lunch_time=operating_hours_dict.get("lunch_time"),
-            dinner_time=operating_hours_dict.get("dinner_time"),
-        )
+        response_data = build_public_restaurant_schema(restaurant, operating_hours_dict)
         restaurant_schemas.append(response_data)
     logger.info("Total restaurants found: %d", len(restaurant_schemas))
 
     return paginate(restaurant_schemas, params)
 
 
+@admin_router.get("/", response_model=CustomPage[RestaurantResponse])
+async def get_admin_restaurants(  # noqa: PLR0913
+    db: Annotated[AsyncSession, Depends(get_db)],
+    params: Annotated[Params, Depends()],
+    current_user: Annotated[AdminUserSchema, Depends(get_admin_user)],
+    owner_user_id: Annotated[
+        str | None, Query(description="식당 소유자 user_id")
+    ] = None,
+    manager_user_id: Annotated[
+        str | None, Query(description="식당 관리자 user_id")
+    ] = None,
+    name: Annotated[str | None, Query(description="식당 이름 (부분 일치)")] = None,
+    establishment_type: Annotated[
+        EstablishmentType | None,
+        Query(description=ESTABLISHMENT_TYPE_DESCRIPTION),
+    ] = None,
+    is_campus: Annotated[
+        bool | None, Query(description="캠퍼스 내 식당 여부(true|false)")
+    ] = None,
+    include_inactive: bool = Query(False, description="비활성 식당 포함 여부"),
+) -> CustomPage[RestaurantResponse]:
+    """Admin-only restaurant list with management filters and full responses."""
+    _ = current_user
+    owner_filter_requested = owner_user_id is not None
+    manager_filter_requested = manager_user_id is not None
+    owner_id, manager_id = await resolve_user_ids(db, owner_user_id, manager_user_id)
+
+    stmt = select(Restaurant)
+    if not include_inactive:
+        stmt = stmt.where(Restaurant.is_active.is_(True))
+
+    user_filters = []
+    if owner_filter_requested and owner_id is not None:
+        user_filters.append(Restaurant.owner == owner_id)
+    if manager_filter_requested and manager_id is not None:
+        user_filters.append(Restaurant.managers.any(id=manager_id))
+    if owner_filter_requested or manager_filter_requested:
+        stmt = stmt.where(or_(*user_filters) if user_filters else false())
+    if name:
+        stmt = stmt.where(Restaurant.name.contains(name))
+        stmt = stmt.order_by(
+            case((Restaurant.name == name, 0), else_=1), Restaurant.name.asc()
+        )
+    if establishment_type:
+        stmt = stmt.where(Restaurant.establishment_type == establishment_type)
+    if is_campus is not None:
+        stmt = stmt.where(Restaurant.is_campus == is_campus)
+
+    result = await db.execute(stmt)
+    restaurants = result.scalars().all()
+    return paginate(
+        [
+            await _management_restaurant_response(restaurant, db)
+            for restaurant in restaurants
+        ],
+        params,
+    )
+
+
+@admin_router.get("/{restaurant_id}", response_model=BaseSchema[RestaurantResponse])
+async def get_admin_restaurant(
+    restaurant_id: int,
+    current_user: Annotated[AdminUserSchema, Depends(get_admin_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> BaseSchema[RestaurantResponse]:
+    """Admin-only restaurant detail including inactive restaurants."""
+    _ = current_user
+    restaurant = await get_restaurant_or_404(db, restaurant_id)
+    return BaseSchema[RestaurantResponse](
+        data=await _management_restaurant_response(restaurant, db)
+    )
+
+
 add_pagination(router)
+add_pagination(admin_router)
