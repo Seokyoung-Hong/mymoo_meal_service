@@ -35,6 +35,7 @@ if config.config_file_name is not None:
 # ✅ SQLAlchemy 모델 자동 감지
 from app.database import Base  # Base.metadata 자동 불러오기
 from app.models.audit import AuditLog  # noqa: F401
+from app.models.images import StoredImage  # noqa: F401
 from app.models.meals import NonEscapedJSON  # ✅ 커스텀 타입 추가
 
 target_metadata = Base.metadata

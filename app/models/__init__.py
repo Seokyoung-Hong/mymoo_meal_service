@@ -1,6 +1,7 @@
 """init file for models module."""
 
 from app.models.meals import NonEscapedJSON, MealType, Meal
+from app.models.images import StoredImage
 from app.models.audit import AuditLog
 from app.models.pricing import RestaurantPricingPolicy
 from app.models.worker import (
@@ -22,6 +23,7 @@ __all__ = [
     "NonEscapedJSON",
     "MealType",
     "Meal",
+    "StoredImage",
     "AuditLog",
     "RestaurantPricingPolicy",
     "CashTransaction",
