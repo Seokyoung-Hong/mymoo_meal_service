@@ -30,6 +30,7 @@ from app.database import Base
 from app.models import MealType, User  # noqa: E402, F401
 from app.routers import (
     admin_restaurants_router,
+    images_router,
     meals_router,
     pricing_router,
     restaurants_router,
@@ -153,6 +154,7 @@ async def test_app(
     app.include_router(admin_restaurants_router)
     app.include_router(users_router)
     app.include_router(worker_router)
+    app.include_router(images_router)
 
     @app.get("/", dependencies=[Depends(optional_metrics_x_user_id)])
     async def root() -> dict[str, str]:

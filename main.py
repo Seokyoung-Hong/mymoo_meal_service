@@ -9,6 +9,7 @@ import uvicorn
 from app.config import logger, Config
 from app.routers import (
     admin_restaurants_router,
+    images_router,
     meals_router,
     pricing_router,
     restaurants_router,
@@ -21,6 +22,7 @@ from app.utils.lifespan import (
 )
 from app.utils.auth import optional_metrics_x_user_id
 from app.utils.request_id import add_request_id_middleware
+from app.utils.scheduler import create_scheduler
 from app.database import init_db
 
 
@@ -46,9 +48,14 @@ async def lifespan(app: FastAPI):
     # 3. Service Account를 DB에 등록 (Restaurant owner로 사용)
     await ensure_service_account_in_db()
 
+    # 4. 백그라운드 스케줄러 시작 (고아 이미지 정리 등)
+    scheduler = create_scheduler()
+    scheduler.start()
+
     yield  # FastAPI 실행 유지
 
-    # 4. 종료 작업
+    # 5. 종료 작업
+    scheduler.shutdown(wait=False)
     logger.info("🛑 서비스 종료: 정리 작업 완료")
 
 
@@ -70,6 +77,7 @@ app.include_router(restaurants_router)
 app.include_router(admin_restaurants_router)
 app.include_router(users_router)
 app.include_router(worker_router)
+app.include_router(images_router)
 
 
 @app.get("/", dependencies=[Depends(optional_metrics_x_user_id)])
