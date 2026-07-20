@@ -21,6 +21,8 @@ dependencies = [
     "aiosqlite>=0.21.0",
     "psycopg2-binary>=2.9.10",
     "jwcrypto>=1.5.8",
+    "pillow>=12.3.0",
+    "python-multipart>=0.0.32",
 ]
 
 [dependency-groups]
@@ -103,6 +105,7 @@ testpaths = ["tests"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**/*.py" = ["D100", "D103", "S101", "PLR2004"]
+"app/routers/images.py" = ["PLR0913"]
 "app/routers/meals.py" = ["B008", "D417", "PLR0913"]
 "app/schemas/users.py" = ["D100", "D101"]
 "app/services/__init__.py" = ["D104"]

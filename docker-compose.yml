@@ -10,6 +10,7 @@ services:
       MEAL_TYPES_FILE_NAME: ${MEAL_TYPES_FILE_NAME:-meal_types.json}
     volumes:
       - ./app/config/meal_types.json:/app/app/config/meal_types.json:ro
+      - image_data:/app/data/images
     ports:
       - "5600:80"
     networks:
@@ -58,3 +59,4 @@ networks:
 
 volumes:
   db_data:
+  image_data:

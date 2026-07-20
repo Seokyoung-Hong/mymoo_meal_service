@@ -26,6 +26,11 @@ SERVICE_DIR = os.path.abspath(os.path.join(CONFIG_DIR, "../.."))
 if not os.path.exists(os.path.join(SERVICE_DIR, "tmp")):
     os.makedirs(os.path.join(SERVICE_DIR, "tmp"))
 
+# 이미지 저장 디렉터리 생성 (원본은 비공개 보관, public은 webp 파생본 서빙용)
+IMAGE_DIR = os.getenv("IMAGE_DIR", os.path.join(SERVICE_DIR, "data", "images"))
+os.makedirs(os.path.join(IMAGE_DIR, "originals"), exist_ok=True)
+os.makedirs(os.path.join(IMAGE_DIR, "public"), exist_ok=True)
+
 # 로깅 설정
 logger = logging.getLogger("mymoo_meal_service")
 logger.setLevel(logging.DEBUG)  # 모든 로그 기록
@@ -75,9 +80,7 @@ def database_url():
 def comma_separated_env(name: str, default: str = "") -> list[str]:
     """쉼표로 구분된 환경 변수 값을 리스트로 반환합니다."""
     return [
-        item.strip()
-        for item in os.getenv(name, default).split(",")
-        if item.strip()
+        item.strip() for item in os.getenv(name, default).split(",") if item.strip()
     ]
 
 
@@ -136,6 +139,26 @@ class Config:
     REALM_GLOBAL_ADMIN_ROLE = "global_admin"
     MEAL_CLIENT_ADMIN_ROLE = "meal_admin"
 
+    # 이미지 업로드 설정
+    IMAGE_DIR = IMAGE_DIR
+    IMAGE_ORIGINALS_DIR = os.path.join(IMAGE_DIR, "originals")
+    IMAGE_PUBLIC_DIR = os.path.join(IMAGE_DIR, "public")
+    IMAGE_MAX_UPLOAD_BYTES = int(
+        os.getenv("IMAGE_MAX_UPLOAD_BYTES", str(20 * 1024 * 1024))
+    )
+    IMAGE_MAX_PIXELS = int(os.getenv("IMAGE_MAX_PIXELS", "40000000"))
+    # 썸네일 크롭 비율("W:H")과 파생본 크기 — 정책 변경 시 환경 변수로 조정
+    # 썸네일: IMAGE_TARGET_RATIO로 중앙 크롭, 전체화면용: 원본 비율 유지
+    IMAGE_TARGET_RATIO = os.getenv("IMAGE_TARGET_RATIO", "1:1")
+    IMAGE_FULL_SIZE = int(os.getenv("IMAGE_FULL_SIZE", "1600"))
+    IMAGE_THUMBNAIL_SIZE = int(os.getenv("IMAGE_THUMBNAIL_SIZE", "400"))
+    IMAGE_WEBP_QUALITY = int(os.getenv("IMAGE_WEBP_QUALITY", "80"))
+    # 프록시 뒤에서 request.base_url이 내부 호스트를 가리키므로 공개 URL을 명시 설정
+    IMAGE_PUBLIC_BASE_URL = os.getenv("IMAGE_PUBLIC_BASE_URL", "").rstrip("/")
+    IMAGE_ORPHAN_GRACE_HOURS = int(os.getenv("IMAGE_ORPHAN_GRACE_HOURS", "24"))
+    IMAGE_CLEANUP_INTERVAL_HOURS = int(os.getenv("IMAGE_CLEANUP_INTERVAL_HOURS", "24"))
+    IMAGE_CLEANUP_ENABLED = os.getenv("IMAGE_CLEANUP_ENABLED", "true").lower() == "true"
+
     class HttpStatus:
         """HTTP 상태 코드를 정의하는 클래스"""
 
@@ -147,6 +170,8 @@ class Config:
         FORBIDDEN = 403
         NOT_FOUND = 404
         CONFLICT = 409
+        PAYLOAD_TOO_LARGE = 413
+        UNPROCESSABLE_ENTITY = 422
         INTERNAL_SERVER_ERROR = 500
 
     @staticmethod
