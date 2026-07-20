@@ -41,7 +41,10 @@ def test_test_portal_keeps_tokens_out_of_local_storage() -> None:
     assert "localStorage.setItem(storageKey, JSON.stringify(state))" not in source
     assert "const authStorageKey" in source
     assert "sessionStorage.setItem(" in source
-    assert '"accessToken",' not in source.split("const persistedSettingKeys = [", 1)[1].split(
-        "];",
-        1,
-    )[0]
+    assert (
+        '"accessToken",'
+        not in source.split("const persistedSettingKeys = [", 1)[1].split(
+            "];",
+            1,
+        )[0]
+    )

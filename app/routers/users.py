@@ -14,7 +14,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config.config import Config, logger
 from app.models.user import User
 from app.schemas.users import UserCreate, UserSchema
-from app.utils.db import get_admin_user, get_db, get_user_by_id, create_user, delete_user
+from app.utils.db import (
+    get_admin_user,
+    get_db,
+    get_user_by_id,
+    create_user,
+    delete_user,
+)
 
 router = APIRouter(
     prefix="/users",

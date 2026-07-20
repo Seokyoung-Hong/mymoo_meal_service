@@ -194,7 +194,9 @@ async def test_admin_restaurant_routes_require_authorization_without_override(
     app = build_restaurant_auth_app(db_session)
 
     transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://testserver"
+    ) as client:
         list_response = await client.get(
             "/admin/restaurants/",
             params={"include_inactive": "true"},
@@ -227,7 +229,9 @@ async def test_admin_restaurant_detail_real_auth_allows_meal_admin_and_forbids_n
     app = build_restaurant_auth_app(db_session)
 
     transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://testserver"
+    ) as client:
         admin_response = await client.get(
             f"/admin/restaurants/{inactive.id}",
             headers={"Authorization": f"Bearer {admin_token}"},

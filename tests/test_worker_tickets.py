@@ -131,7 +131,9 @@ async def test_ticket_usage_request_approval_marks_ticket_used_and_deducts_cash(
     )
 
     wallet = await db_session.scalar(select(CashWallet).where(CashWallet.user_id == 1))
-    ticket = await db_session.scalar(select(MealTicket).where(MealTicket.code == "TICKET-001"))
+    ticket = await db_session.scalar(
+        select(MealTicket).where(MealTicket.code == "TICKET-001")
+    )
     cash_debit = await db_session.scalar(
         select(CashTransaction).where(
             CashTransaction.transaction_type == "ticket_shortfall_payment"
@@ -175,11 +177,15 @@ async def test_ticket_usage_approval_requires_sufficient_cash(
         f"/restaurants/{restaurant.id}/ticket-usage-requests/"
         f"{request_response.json()['data']['id']}/approval"
     )
-    ticket = await db_session.scalar(select(MealTicket).where(MealTicket.code == "LOW-TICKET"))
+    ticket = await db_session.scalar(
+        select(MealTicket).where(MealTicket.code == "LOW-TICKET")
+    )
 
     assert request_response.status_code == 201
     assert request_response.json()["data"]["cash_amount_required"] == 6000
     assert approve_response.status_code == 409
-    assert approve_response.json()["detail"] == "부족분을 결제할 캐시 잔액이 부족합니다."
+    assert (
+        approve_response.json()["detail"] == "부족분을 결제할 캐시 잔액이 부족합니다."
+    )
     assert ticket is not None
     assert ticket.status == "pending"

@@ -37,6 +37,7 @@ async def test_service_account_bootstrap_skips_placeholder_config(
         "SERVICE_ACCOUNT_SUB",
         "replace-with-service-account-sub",
     )
+
     def fail_session() -> None:
         raise AssertionError("DB should not be opened for placeholder config")
 

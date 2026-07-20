@@ -165,7 +165,9 @@ async def register_meal_ticket(
             status_code=Config.HttpStatus.BAD_REQUEST,
             detail="만료된 식권은 등록할 수 없습니다.",
         )
-    existing = await db.scalar(select(MealTicket).where(MealTicket.code == payload.code))
+    existing = await db.scalar(
+        select(MealTicket).where(MealTicket.code == payload.code)
+    )
     if existing is not None:
         raise HTTPException(
             status_code=Config.HttpStatus.CONFLICT,
