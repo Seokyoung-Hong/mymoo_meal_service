@@ -189,3 +189,108 @@ async def test_ticket_usage_approval_requires_sufficient_cash(
     )
     assert ticket is not None
     assert ticket.status == "pending"
+
+
+async def test_ticket_scan_redeems_available_ticket_in_one_step(
+    async_client: AsyncClient,
+    db_session: AsyncSession,
+    test_app: FastAPI,
+) -> None:
+    _, owner, restaurant = await seed_worker_and_restaurant(db_session)
+    await register_ticket(async_client, amount=5000)
+    await async_client.post("/worker/cash/card-charges", json={"amount": 3000})
+    await override_current_user(test_app, owner)
+
+    scan_response = await async_client.post(
+        f"/restaurants/{restaurant.id}/ticket-scans",
+        json={"ticket_code": "TICKET-001", "meal_price": 7000},
+    )
+
+    wallet = await db_session.scalar(select(CashWallet).where(CashWallet.user_id == 1))
+    ticket = await db_session.scalar(
+        select(MealTicket).where(MealTicket.code == "TICKET-001")
+    )
+
+    assert scan_response.status_code == 201, scan_response.text
+    data = scan_response.json()["data"]
+    assert data["status"] == "used"
+    assert data["ticket_amount_applied"] == 5000
+    assert data["cash_amount_required"] == 2000
+    assert ticket is not None
+    assert ticket.status == "used"
+    assert wallet is not None
+    assert wallet.balance == 1000
+
+
+async def test_ticket_scan_approves_existing_pending_request(
+    async_client: AsyncClient,
+    db_session: AsyncSession,
+    test_app: FastAPI,
+) -> None:
+    _, owner, restaurant = await seed_worker_and_restaurant(db_session)
+    await register_ticket(async_client, amount=7000)
+    request_response = await async_client.post(
+        "/worker/ticket-usage-requests",
+        json={
+            "ticket_code": "TICKET-001",
+            "restaurant_id": restaurant.id,
+            "meal_price": 7000,
+        },
+    )
+    await override_current_user(test_app, owner)
+
+    scan_response = await async_client.post(
+        f"/restaurants/{restaurant.id}/ticket-scans",
+        json={"ticket_code": "TICKET-001"},
+    )
+
+    assert request_response.status_code == 201
+    assert scan_response.status_code == 201, scan_response.text
+    data = scan_response.json()["data"]
+    assert data["id"] == request_response.json()["data"]["id"]
+    assert data["status"] == "used"
+
+
+async def test_ticket_scan_rejects_unknown_used_and_insufficient_cash(
+    async_client: AsyncClient,
+    db_session: AsyncSession,
+    test_app: FastAPI,
+) -> None:
+    _, owner, restaurant = await seed_worker_and_restaurant(db_session)
+    restaurant_id = restaurant.id
+    await register_ticket(async_client, code="LOW-TICKET", amount=1000)
+    await override_current_user(test_app, owner)
+
+    unknown_response = await async_client.post(
+        f"/restaurants/{restaurant_id}/ticket-scans",
+        json={"ticket_code": "NO-SUCH-TICKET"},
+    )
+    shortfall_response = await async_client.post(
+        f"/restaurants/{restaurant_id}/ticket-scans",
+        json={"ticket_code": "LOW-TICKET", "meal_price": 7000},
+    )
+    # 공유 세션 특성상 엔드포인트의 rollback이 owner 객체를 만료시키므로 재로딩한다.
+    await db_session.refresh(owner)
+    ticket = await db_session.scalar(
+        select(MealTicket).where(MealTicket.code == "LOW-TICKET")
+    )
+
+    assert unknown_response.status_code == 404
+    assert shortfall_response.status_code == 409
+    assert (
+        shortfall_response.json()["detail"] == "부족분을 결제할 캐시 잔액이 부족합니다."
+    )
+    # 스캔 실패 시 식권은 다시 사용 가능한 상태로 남아야 한다.
+    assert ticket is not None
+    assert ticket.status == "available"
+
+    first_scan = await async_client.post(
+        f"/restaurants/{restaurant_id}/ticket-scans",
+        json={"ticket_code": "LOW-TICKET", "meal_price": 1000},
+    )
+    second_scan = await async_client.post(
+        f"/restaurants/{restaurant_id}/ticket-scans",
+        json={"ticket_code": "LOW-TICKET", "meal_price": 1000},
+    )
+    assert first_scan.status_code == 201, first_scan.text
+    assert second_scan.status_code == 409

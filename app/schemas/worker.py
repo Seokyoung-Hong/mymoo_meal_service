@@ -63,6 +63,23 @@ class TicketUsageRequestCreate(BaseModel):
         return self
 
 
+class TicketScanCreate(BaseModel):
+    """Redeem a scanned ticket code in one step from a restaurant scanner."""
+
+    ticket_code: str = Field(min_length=1, max_length=64)
+    meal_type: MealType | None = None
+    served_date: date | None = None
+    meal_price: int | None = Field(default=None, gt=0)
+
+    @model_validator(mode="after")
+    def normalize_ticket_code(self) -> "TicketScanCreate":
+        """Store compact ticket codes without surrounding whitespace."""
+        self.ticket_code = self.ticket_code.strip()
+        if not self.ticket_code:
+            raise ValueError("ticket_code must not be empty")
+        return self
+
+
 class TicketUsageRequestResponse(BaseModel):
     """Ticket usage request response for workers and restaurants."""
 
