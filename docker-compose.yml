@@ -100,7 +100,8 @@ services:
       CONSOLE_API_UPSTREAM: ${SIKSABU_WEB_API_UPSTREAM:-siksabu-company-api:5700}
       KEYCLOAK_ISSUER: ${SIKSABU_WEB_KEYCLOAK_ISSUER:-https://auth.quanect.kr/realms/Mymoo}
       KEYCLOAK_CLIENT_ID: ${SIKSABU_WEB_KEYCLOAK_CLIENT_ID:-siksabu-admin-console}
-      DEV_COMPANY_ID: ${SIKSABU_WEB_DEV_COMPANY_ID:-}
+      DEV_COMPANY_ID: ${SIKSABU_WEB_DEV_COMPANY_ID:-1}
+      DEV_USER_ID: ${SIKSABU_WEB_DEV_USER_ID:-op-sub}
       AUTH_DEV_HEADER_FALLBACK_ENABLED: "true"
     ports:
       - "5602:80"
