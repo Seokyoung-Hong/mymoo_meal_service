@@ -166,12 +166,13 @@ async def get_current_user(
         raise bearer_unauthorized("Authorization Bearer token is required")
 
     user = await get_or_create_user(x_user_id, db)
+    dev_admin = x_user_id in Config.DEV_ADMIN_USER_IDS
     _attach_auth_principal(
         user,
         AuthenticatedPrincipal(
             user_id=x_user_id,
-            global_admin=False,
-            meal_admin=False,
+            global_admin=dev_admin,
+            meal_admin=dev_admin,
             claims={"sub": x_user_id},
         ),
     )

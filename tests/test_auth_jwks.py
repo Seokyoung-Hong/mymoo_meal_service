@@ -453,3 +453,22 @@ async def test_cached_jwks_kid_miss_returns_401_after_refresh_still_misses(
     assert jwks_calls == 2
     assert response.status_code == 401
     assert response.headers["www-authenticate"] == "Bearer"
+
+
+async def test_dev_header_admin_allowlist_grants_admin(
+    auth_client: httpx.AsyncClient,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await seed_user(db_session, "dev-admin")
+    monkeypatch.setattr(Config, "AUTH_DEV_HEADER_FALLBACK_ENABLED", True)
+    monkeypatch.setattr(Config, "ENV", "test")
+    monkeypatch.setattr(Config, "DEV_ADMIN_USER_IDS", frozenset({"dev-admin"}))
+
+    allowed = await auth_client.get("/admin", headers={"X-User-ID": "dev-admin"})
+
+    await seed_user(db_session, "dev-user")
+    denied = await auth_client.get("/admin", headers={"X-User-ID": "dev-user"})
+
+    assert allowed.status_code == 200
+    assert denied.status_code == 403

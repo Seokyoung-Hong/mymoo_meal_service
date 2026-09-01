@@ -121,6 +121,9 @@ class Config:
     AUTH_DEV_HEADER_FALLBACK_ENABLED = (
         os.getenv("AUTH_DEV_HEADER_FALLBACK_ENABLED", "false").lower() == "true"
     )
+    # X-User-ID 폴백에서 관리자 권한을 부여할 sub 목록(로컬/데모 전용).
+    # dev_header_fallback_allowed()가 참일 때만 의미가 있다.
+    DEV_ADMIN_USER_IDS = frozenset(comma_separated_env("DEV_ADMIN_USER_IDS"))
     KEYCLOAK_DISCOVERY_URL = os.getenv(
         "KEYCLOAK_DISCOVERY_URL",
         f"{KC_SERVER_URL.rstrip('/')}/realms/{KC_REALM}/.well-known/openid-configuration",
