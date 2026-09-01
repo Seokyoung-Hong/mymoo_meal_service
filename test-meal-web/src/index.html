@@ -397,6 +397,26 @@
                   <button data-action="approveRestaurantTicketUsageRequest" type="button">사용 승인</button>
                 </div>
               </section>
+
+              <section class="panel">
+                <div class="panel-heading">
+                  <h3>식당 식권 스캔</h3>
+                  <button data-action="scanRestaurantTicket" type="button">스캔 처리</button>
+                </div>
+                <div class="form-grid wide">
+                  <label>식당 ID <input id="scanRestaurantId" type="number" min="1" /></label>
+                  <label>식권 코드 <input id="scanTicketCode" value="TICKET-001" /></label>
+                  <label>식사 유형
+                    <select id="scanMealType">
+                      <option value="">없음</option>
+                      <option value="breakfast">breakfast</option>
+                      <option value="lunch">lunch</option>
+                      <option value="dinner">dinner</option>
+                    </select>
+                  </label>
+                  <label>직접 금액 <input id="scanMealPrice" type="number" min="1" placeholder="가격 정책 없을 때" /></label>
+                </div>
+              </section>
             </div>
 
             <div class="mode-view" id="adminView">
@@ -457,6 +477,24 @@
                   <button data-action="adminRestaurantDetail" type="button">식당 상세</button>
                   <button data-action="updateRestaurant" type="button">식당 정보 수정</button>
                   <button data-action="updateRestaurantStatus" type="button">활성 상태 변경</button>
+                </div>
+              </section>
+
+              <section class="panel">
+                <div class="panel-heading">
+                  <h3>식대 발급</h3>
+                  <button data-action="issueMealAllowances" type="button">식대 발급</button>
+                </div>
+                <div class="form-grid wide">
+                  <label>근로자 user_id 목록
+                    <textarea id="allowanceWorkerUserIds" rows="3" spellcheck="false" placeholder="쉼표 또는 줄바꿈으로 구분"></textarea>
+                  </label>
+                  <label>금액 <input id="allowanceAmount" type="number" min="1" value="5000" /></label>
+                  <label>만료일 <input id="allowanceExpiresOn" type="date" /></label>
+                  <label>조회 필터 worker_user_id <input id="allowanceFilterWorkerUserId" /></label>
+                </div>
+                <div class="button-row">
+                  <button data-action="listMealAllowances" type="button">발급 내역 조회</button>
                 </div>
               </section>
             </div>

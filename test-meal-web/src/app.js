@@ -577,6 +577,32 @@ function workerTicketUsagePayload() {
   return payload;
 }
 
+function mealAllowancePayload() {
+  return {
+    worker_user_ids: $("allowanceWorkerUserIds").value
+      .split(/[\n,]/)
+      .map((item) => item.trim())
+      .filter(Boolean),
+    amount: Number($("allowanceAmount").value),
+    expires_on: $("allowanceExpiresOn").value || today(),
+  };
+}
+
+function ticketScanPayload() {
+  const payload = {
+    ticket_code: $("scanTicketCode").value.trim(),
+  };
+  const mealType = $("scanMealType").value;
+  const mealPrice = $("scanMealPrice").value;
+  if (mealType) {
+    payload.meal_type = mealType;
+  }
+  if (mealPrice) {
+    payload.meal_price = Number(mealPrice);
+  }
+  return payload;
+}
+
 const actions = {
   health: () => callApi("GET", "/health", { auth: false }),
   listUsers: () => callApi("GET", "/users/"),
@@ -676,6 +702,18 @@ const actions = {
     }),
   listWorkerTicketUsageRequests: () =>
     callApi("GET", "/worker/ticket-usage-requests"),
+  scanRestaurantTicket: () =>
+    callApi(
+      "POST",
+      `/restaurants/${requireNumber("scanRestaurantId", "식당 ID")}/ticket-scans`,
+      { body: ticketScanPayload() },
+    ),
+  issueMealAllowances: () =>
+    callApi("POST", "/admin/meal-allowances", { body: mealAllowancePayload() }),
+  listMealAllowances: () =>
+    callApi("GET", "/admin/meal-allowances", {
+      params: { worker_user_id: $("allowanceFilterWorkerUserId").value },
+    }),
   ownerSubmitRestaurantRequest: () =>
     callApi("POST", "/restaurants/requests", { body: requestPayload("ownerRequest") }),
   listRequests: () =>
@@ -898,6 +936,7 @@ async function init() {
   const ticketExpiry = new Date();
   ticketExpiry.setFullYear(ticketExpiry.getFullYear() + 1);
   $("workerTicketExpiresOn").value ||= ticketExpiry.toISOString().slice(0, 10);
+  $("allowanceExpiresOn").value ||= ticketExpiry.toISOString().slice(0, 10);
   $("workerUseDate").value ||= today();
   await completeLoginIfNeeded();
   updateAuthStatus();
