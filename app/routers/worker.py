@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 from typing import Annotated
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import select
@@ -21,9 +22,12 @@ from app.models.worker import (
 )
 from app.schemas.base import BaseSchema
 from app.schemas.meals import MealType as MealTypeSchema
+from app.schemas.users import AdminUserSchema
 from app.schemas.worker import (
+    AllowanceTicketResponse,
     CashBalanceResponse,
     CashTransactionResponse,
+    MealAllowanceCreate,
     MealTicketCreate,
     MealTicketResponse,
     MockCardChargeCreate,
@@ -34,7 +38,7 @@ from app.schemas.worker import (
 )
 from app.services.audit import AuditLogEntry, add_audit_log, request_id_from_request
 from app.services.pricing import resolve_price
-from app.utils.db import get_current_user, get_db
+from app.utils.db import get_admin_user, get_current_user, get_db
 from app.utils.restaurants import get_restaurant_with_permission
 
 
@@ -222,6 +226,107 @@ async def list_meal_tickets(
     )
     return BaseSchema[list[MealTicketResponse]](
         data=[_ticket_response(ticket) for ticket in result.scalars().all()]
+    )
+
+
+def _allowance_response(
+    ticket: MealTicket,
+    worker_user_id: str,
+) -> AllowanceTicketResponse:
+    return AllowanceTicketResponse(
+        **_ticket_response(ticket).model_dump(),
+        worker_user_id=worker_user_id,
+    )
+
+
+@router.post("/admin/meal-allowances", status_code=Config.HttpStatus.CREATED)
+async def issue_meal_allowances(
+    payload: MealAllowanceCreate,
+    request: Request,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    admin_user: Annotated[AdminUserSchema, Depends(get_admin_user)],
+) -> BaseSchema[list[AllowanceTicketResponse]]:
+    """Issue a meal allowance ticket to each of the given workers (admin only)."""
+    if payload.expires_on < _today():
+        raise HTTPException(
+            status_code=Config.HttpStatus.BAD_REQUEST,
+            detail="만료일이 지난 식대는 제공할 수 없습니다.",
+        )
+    result = await db.execute(
+        select(User).where(User.user_id.in_(payload.worker_user_ids))
+    )
+    workers = {user.user_id: user for user in result.scalars()}
+    missing = [uid for uid in payload.worker_user_ids if uid not in workers]
+    if missing:
+        raise HTTPException(
+            status_code=Config.HttpStatus.NOT_FOUND,
+            detail="존재하지 않는 사용자입니다: " + ", ".join(missing),
+        )
+
+    issued: list[tuple[MealTicket, str]] = []
+    try:
+        for worker_user_id in payload.worker_user_ids:
+            ticket = MealTicket(
+                code=uuid4().hex,
+                owner_id=workers[worker_user_id].id,
+                amount=payload.amount,
+                expires_on=payload.expires_on,
+            )
+            db.add(ticket)
+            issued.append((ticket, worker_user_id))
+        await db.flush()
+        for ticket, worker_user_id in issued:
+            add_audit_log(
+                db,
+                AuditLogEntry(
+                    request_id=request_id_from_request(request),
+                    actor_user_id=admin_user.user_id,
+                    action="meal_allowance.issue",
+                    resource_type="meal_ticket",
+                    resource_id=ticket.id,
+                    after={
+                        "code": ticket.code,
+                        "worker_user_id": worker_user_id,
+                        "amount": ticket.amount,
+                        "expires_on": ticket.expires_on.isoformat(),
+                        "status": ticket.status,
+                    },
+                ),
+            )
+        # 커밋 후 만료된 인스턴스 접근을 피하려고 응답을 먼저 만든다.
+        data = [
+            _allowance_response(ticket, worker_user_id)
+            for ticket, worker_user_id in issued
+        ]
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        raise
+
+    return BaseSchema[list[AllowanceTicketResponse]](data=data)
+
+
+@router.get("/admin/meal-allowances")
+async def list_meal_allowances(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    admin_user: Annotated[AdminUserSchema, Depends(get_admin_user)],
+    worker_user_id: Annotated[str | None, Query()] = None,
+) -> BaseSchema[list[AllowanceTicketResponse]]:
+    """List all meal tickets with their owners for admin overview."""
+    _ = admin_user
+    stmt = (
+        select(MealTicket, User.user_id)
+        .join(User, MealTicket.owner_id == User.id)
+        .order_by(MealTicket.registered_at.desc(), MealTicket.id.desc())
+    )
+    if worker_user_id is not None:
+        stmt = stmt.where(User.user_id == worker_user_id)
+    result = await db.execute(stmt)
+    return BaseSchema[list[AllowanceTicketResponse]](
+        data=[
+            _allowance_response(ticket, owner_user_id)
+            for ticket, owner_user_id in result.all()
+        ]
     )
 
 

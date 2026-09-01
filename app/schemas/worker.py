@@ -45,6 +45,20 @@ class MealTicketResponse(BaseModel):
     used_at: Timestamp | None = None
 
 
+class MealAllowanceCreate(BaseModel):
+    """Issue meal allowance tickets to workers as an admin."""
+
+    worker_user_ids: list[str] = Field(min_length=1)
+    amount: int = Field(gt=0)
+    expires_on: date
+
+
+class AllowanceTicketResponse(MealTicketResponse):
+    """Meal ticket response enriched with the owning worker's user_id."""
+
+    worker_user_id: str
+
+
 class TicketUsageRequestCreate(BaseModel):
     """Create a pending ticket usage request for restaurant approval."""
 
