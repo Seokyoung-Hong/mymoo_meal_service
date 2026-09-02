@@ -1,4 +1,4 @@
-"""Worker meal ticket and cash wallet request/response schemas."""
+"""Worker meal allowance wallet and cash wallet request/response schemas."""
 
 from __future__ import annotations
 
@@ -12,33 +12,18 @@ from app.schemas.meals import MealType
 
 
 Timestamp = Annotated[datetime, Tsp]
-MealTicketStatus = Literal["available", "pending", "used", "expired"]
+MealTicketStatus = Literal["available", "used", "expired"]
 TicketUsageRequestStatus = Literal["pending", "used"]
 CashTransactionType = Literal["mock_card_charge", "ticket_shortfall_payment"]
 
 
-class MealTicketCreate(BaseModel):
-    """Register a one-use meal ticket by code."""
-
-    code: str = Field(min_length=1, max_length=64)
-    amount: int = Field(gt=0)
-    expires_on: date
-
-    @model_validator(mode="after")
-    def normalize_code(self) -> "MealTicketCreate":
-        """Store compact ticket codes without surrounding whitespace."""
-        self.code = self.code.strip()
-        if not self.code:
-            raise ValueError("code must not be empty")
-        return self
-
-
 class MealTicketResponse(BaseModel):
-    """Meal ticket response."""
+    """Meal allowance credit bucket response."""
 
     id: int
     code: str
     amount: int
+    remaining_amount: int
     expires_on: date
     status: MealTicketStatus
     registered_at: Timestamp
@@ -59,38 +44,39 @@ class AllowanceTicketResponse(MealTicketResponse):
     worker_user_id: str
 
 
-class TicketUsageRequestCreate(BaseModel):
-    """Create a pending ticket usage request for restaurant approval."""
+class AllowanceBalanceResponse(BaseModel):
+    """Sum of the worker's unexpired allowance bucket balances."""
 
-    ticket_code: str = Field(min_length=1, max_length=64)
-    restaurant_id: int = Field(gt=0)
-    meal_type: MealType | None = None
-    served_date: date | None = None
-    meal_price: int | None = Field(default=None, gt=0)
+    balance: int
 
-    @model_validator(mode="after")
-    def normalize_ticket_code(self) -> "TicketUsageRequestCreate":
-        """Store compact ticket codes without surrounding whitespace."""
-        self.ticket_code = self.ticket_code.strip()
-        if not self.ticket_code:
-            raise ValueError("ticket_code must not be empty")
-        return self
+
+class WorkerQrResponse(BaseModel):
+    """URL to encode in the worker's QR code; scanner devices GET it as-is."""
+
+    url: str
+
+
+class ScannerKeyResponse(BaseModel):
+    """Newly issued restaurant scanner key. Only the sha256 is stored server-side."""
+
+    scanner_key: str
+    header: str
 
 
 class TicketScanCreate(BaseModel):
-    """Redeem a scanned ticket code in one step from a restaurant scanner."""
+    """Charge a scanned worker's allowance wallet in one step from a restaurant scanner."""
 
-    ticket_code: str = Field(min_length=1, max_length=64)
+    worker_user_id: str = Field(min_length=1, max_length=255)
     meal_type: MealType | None = None
     served_date: date | None = None
     meal_price: int | None = Field(default=None, gt=0)
 
     @model_validator(mode="after")
-    def normalize_ticket_code(self) -> "TicketScanCreate":
-        """Store compact ticket codes without surrounding whitespace."""
-        self.ticket_code = self.ticket_code.strip()
-        if not self.ticket_code:
-            raise ValueError("ticket_code must not be empty")
+    def normalize_worker_user_id(self) -> "TicketScanCreate":
+        """Store compact worker ids without surrounding whitespace."""
+        self.worker_user_id = self.worker_user_id.strip()
+        if not self.worker_user_id:
+            raise ValueError("worker_user_id must not be empty")
         return self
 
 
@@ -98,8 +84,8 @@ class TicketUsageRequestResponse(BaseModel):
     """Ticket usage request response for workers and restaurants."""
 
     id: int
-    ticket_id: int
-    ticket_code: str
+    ticket_id: int | None = None
+    ticket_code: str | None = None
     worker_user_id: str
     restaurant_id: int
     restaurant_name: str
@@ -112,6 +98,29 @@ class TicketUsageRequestResponse(BaseModel):
     requested_at: Timestamp
     approved_at: Timestamp | None = None
     approved_by_user_id: str | None = None
+
+
+class RevenueRow(BaseModel):
+    """Payment totals for one served date."""
+
+    served_date: date
+    transaction_count: int
+    total_amount: int
+    allowance_amount: int
+    cash_amount: int
+
+
+class RestaurantRevenueResponse(BaseModel):
+    """Restaurant revenue over a served-date range with a per-day breakdown."""
+
+    restaurant_id: int
+    date_from: date
+    date_to: date
+    transaction_count: int
+    total_amount: int
+    allowance_amount: int
+    cash_amount: int
+    by_day: list[RevenueRow]
 
 
 class CashBalanceResponse(BaseModel):

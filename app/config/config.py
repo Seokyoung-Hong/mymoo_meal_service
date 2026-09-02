@@ -107,6 +107,9 @@ class Config:
     )
     DATABASE_URL = database_url()
     TIMEZONE = os.getenv("TIMEZONE", "Asia/Seoul")
+    # 근로자 QR에 담기는 스캔 URL의 공개 베이스(예: https://api.example.com/meal).
+    # 비어 있으면 요청의 base_url(root_path 포함)을 사용한다.
+    PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "").rstrip("/")
     TZ = timezone(TIMEZONE)
     CORS_ALLOW_ORIGINS = comma_separated_env(
         "CORS_ALLOW_ORIGINS",

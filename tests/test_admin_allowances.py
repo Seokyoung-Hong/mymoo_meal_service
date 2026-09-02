@@ -55,6 +55,7 @@ async def test_admin_issues_allowances_to_two_workers(
         "worker-b-sub",
     ]
     assert all(item["amount"] == 6000 for item in issued)
+    assert all(item["remaining_amount"] == 6000 for item in issued)
     assert all(item["status"] == "available" for item in issued)
     assert all(item["expires_on"] == "2099-12-31" for item in issued)
 

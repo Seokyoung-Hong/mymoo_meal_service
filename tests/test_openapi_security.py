@@ -21,6 +21,7 @@ PUBLIC_GET_OPERATIONS = {
     ("/restaurants/", "get"),
     ("/restaurants/{restaurant_id}", "get"),
     ("/images/{file_name}", "get"),
+    ("/scan", "get"),
 }
 
 

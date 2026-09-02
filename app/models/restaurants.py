@@ -8,6 +8,7 @@ from typing import Any, List, Optional, Protocol
 from datetime import datetime, timezone
 
 from sqlalchemy import (
+    String,
     CheckConstraint,
     Float,
     ForeignKey,
@@ -80,6 +81,10 @@ class Restaurant(Base):
     )
     establishment_type: Mapped[str] = mapped_column(Text, nullable=False)
     price: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # QR 스캐너 기기가 X-Scanner-Key 헤더로 보내는 키의 sha256. 키 원문은 저장하지 않는다.
+    scanner_key_hash: Mapped[Optional[str]] = mapped_column(
+        String(64), nullable=True, unique=True
+    )
 
     building_name: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     naver_map_link: Mapped[Optional[str]] = mapped_column(Text, nullable=True)

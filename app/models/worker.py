@@ -1,4 +1,4 @@
-"""Worker meal ticket, cash wallet, and mock card payment models."""
+"""Worker meal allowance wallet, cash wallet, and mock card payment models."""
 
 from __future__ import annotations
 
@@ -20,7 +20,12 @@ from app.database import Base
 
 
 class MealTicket(Base):
-    """A one-use meal ticket registered by a worker."""
+    """A meal allowance credit bucket issued to a worker.
+
+    잔액 차감형 지갑의 한 단위다. ``amount``는 발급액, ``remaining_amount``는 남은 잔액이며
+    스캔 결제 시 만료일이 빠른 버킷부터 차감된다. 잔액이 0이 되면 ``used``, 만료일이
+    지나면 ``expired``가 된다.
+    """
 
     __tablename__ = "meal_ticket"
 
@@ -32,6 +37,7 @@ class MealTicket(Base):
         nullable=False,
     )
     amount: Mapped[int] = mapped_column(Integer, nullable=False)
+    remaining_amount: Mapped[int] = mapped_column(Integer, nullable=False)
     expires_on: Mapped[date] = mapped_column(Date, nullable=False)
     status: Mapped[str] = mapped_column(
         String(32),
@@ -59,7 +65,11 @@ class MealTicket(Base):
     __table_args__ = (
         CheckConstraint("amount > 0", name="meal_ticket_amount_positive_check"),
         CheckConstraint(
-            "status IN ('available', 'pending', 'used', 'expired')",
+            "remaining_amount >= 0 AND remaining_amount <= amount",
+            name="meal_ticket_remaining_check",
+        ),
+        CheckConstraint(
+            "status IN ('available', 'used', 'expired')",
             name="meal_ticket_status_check",
         ),
         Index("meal_ticket_owner_index", "owner_id"),
@@ -69,15 +79,19 @@ class MealTicket(Base):
 
 
 class MealTicketUsageRequest(Base):
-    """A worker request to spend a meal ticket at a restaurant."""
+    """A meal payment settled from a worker's allowance wallet at a restaurant.
+
+    ``ticket_id``는 차감이 시작된 버킷(참고용)이며, 결제가 여러 버킷에 걸치거나
+    전액 캐시로 결제되면 첫 버킷 또는 None이 기록된다.
+    """
 
     __tablename__ = "meal_ticket_usage_request"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    ticket_id: Mapped[int] = mapped_column(
+    ticket_id: Mapped[int | None] = mapped_column(
         Integer,
         ForeignKey("meal_ticket.id", ondelete="CASCADE"),
-        nullable=False,
+        nullable=True,
     )
     worker_id: Mapped[int] = mapped_column(
         Integer,

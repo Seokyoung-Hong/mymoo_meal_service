@@ -1,13 +1,29 @@
-"""Worker meal ticket, cash wallet, and restaurant approval API."""
+"""Worker meal allowance wallet, cash wallet, and restaurant scan API.
+
+결제 모델은 잔액 차감형 지갑이다. 관리자(고객사 콘솔)가 발급한 식대는 만료일이 있는
+버킷(``MealTicket``)으로 쌓이고, 식당에서 결제할 때 만료일이 빠른 버킷부터 식사 금액을
+차감한다. 부족분은 근로자의 현금성 캐시에서 결제된다.
+
+QR 기기 규칙 (``GET /scan``):
+- 근로자 QR에는 ``{PUBLIC_BASE_URL}/scan?worker=<worker_user_id>`` URL 전체가 담긴다
+  (``GET /worker/qr``가 이 URL을 돌려준다).
+- 기기는 그 URL을 그대로 GET 하되 고정 헤더 ``X-Scanner-Key: <식당 스캐너 키>``를 붙인다.
+  키는 식당 주인/매니저가 ``POST /restaurants/{id}/scanner-key``로 발급받는다.
+- 필요하면 기기가 고정 쿼리 ``&meal_type=lunch`` 를 덧붙여 끼니를 지정할 수 있다.
+- 금액은 식당 가격 정책으로 정해진다. 정책이 없으면 400.
+"""
 
 from __future__ import annotations
 
+import hashlib
+import secrets
 from datetime import date, datetime, timezone
 from typing import Annotated
+from urllib.parse import urlencode
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
@@ -24,29 +40,39 @@ from app.schemas.base import BaseSchema
 from app.schemas.meals import MealType as MealTypeSchema
 from app.schemas.users import AdminUserSchema
 from app.schemas.worker import (
+    AllowanceBalanceResponse,
     AllowanceTicketResponse,
     CashBalanceResponse,
     CashTransactionResponse,
     MealAllowanceCreate,
-    MealTicketCreate,
     MealTicketResponse,
     MockCardChargeCreate,
+    RestaurantRevenueResponse,
+    RevenueRow,
+    ScannerKeyResponse,
     TicketScanCreate,
-    TicketUsageRequestCreate,
     TicketUsageRequestResponse,
     TicketUsageRequestStatus,
+    WorkerQrResponse,
 )
 from app.services.audit import AuditLogEntry, add_audit_log, request_id_from_request
 from app.services.pricing import resolve_price
+from app.utils.auth import optional_metrics_x_user_id
 from app.utils.db import get_admin_user, get_current_user, get_db
 from app.utils.restaurants import get_restaurant_with_permission
 
 
 router = APIRouter(tags=["Worker"])
 
+SCANNER_KEY_HEADER = "X-Scanner-Key"
+
 
 def _today() -> date:
     return datetime.now(Config.TZ).date()
+
+
+def _hash_key(key: str) -> str:
+    return hashlib.sha256(key.encode("utf-8")).hexdigest()
 
 
 async def _get_or_create_wallet(db: AsyncSession, user_id: int) -> CashWallet:
@@ -63,6 +89,7 @@ def _ticket_response(ticket: MealTicket) -> MealTicketResponse:
         id=ticket.id,
         code=ticket.code,
         amount=ticket.amount,
+        remaining_amount=ticket.remaining_amount,
         expires_on=ticket.expires_on,
         status=ticket.status,  # type: ignore[arg-type]
         registered_at=ticket.registered_at,
@@ -94,7 +121,7 @@ def _usage_request_response(
     return TicketUsageRequestResponse(
         id=usage_request.id,
         ticket_id=usage_request.ticket_id,
-        ticket_code=ticket.code,
+        ticket_code=ticket.code if ticket is not None else None,
         worker_user_id=worker.user_id,
         restaurant_id=usage_request.restaurant_id,
         restaurant_name=restaurant.name,
@@ -136,18 +163,59 @@ async def _load_usage_request_or_404(
     return usage_request
 
 
-async def _resolve_meal_price(
+# ---------------------------------------------------------------------------
+# 지갑 차감 공통 로직
+# ---------------------------------------------------------------------------
+
+
+async def _available_buckets(
+    db: AsyncSession, owner_id: int, today: date
+) -> list[MealTicket]:
+    """잔액이 남은 미만료 버킷을 만료일 빠른 순으로 돌려주고, 지난 버킷은 expired로 바꾼다."""
+    result = await db.execute(
+        select(MealTicket)
+        .where(MealTicket.owner_id == owner_id, MealTicket.status == "available")
+        .order_by(MealTicket.expires_on, MealTicket.id)
+    )
+    buckets: list[MealTicket] = []
+    for ticket in result.scalars():
+        if ticket.expires_on < today:
+            ticket.status = "expired"
+        elif ticket.remaining_amount > 0:
+            buckets.append(ticket)
+    return buckets
+
+
+def _deduct(
+    buckets: list[MealTicket], amount: int, used_at: datetime
+) -> tuple[int, MealTicket | None]:
+    """버킷 순서대로 amount를 차감한다. (적용된 금액, 첫 차감 버킷)을 돌려준다."""
+    applied = 0
+    first: MealTicket | None = None
+    for bucket in buckets:
+        if applied >= amount:
+            break
+        take = min(bucket.remaining_amount, amount - applied)
+        bucket.remaining_amount -= take
+        applied += take
+        first = first or bucket
+        if bucket.remaining_amount == 0:
+            bucket.status = "used"
+            bucket.used_at = used_at
+    return applied, first
+
+
+async def _meal_price_for(
     db: AsyncSession,
-    payload: TicketUsageRequestCreate,
+    restaurant_id: int,
+    meal_type: MealTypeSchema | None,
+    served_date: date,
+    explicit_price: int | None,
 ) -> int:
-    if payload.meal_price is not None:
-        return payload.meal_price
-    served_date = payload.served_date or _today()
+    if explicit_price is not None:
+        return explicit_price
     resolved = await resolve_price(
-        db,
-        restaurant_id=payload.restaurant_id,
-        meal_type=payload.meal_type,
-        served_date=served_date,
+        db, restaurant_id=restaurant_id, meal_type=meal_type, served_date=served_date
     )
     if resolved.price is not None:
         return resolved.price
@@ -157,60 +225,97 @@ async def _resolve_meal_price(
     )
 
 
-@router.post("/worker/tickets", status_code=Config.HttpStatus.CREATED)
-async def register_meal_ticket(
-    payload: MealTicketCreate,
+async def _charge_wallet(  # noqa: PLR0913
+    db: AsyncSession,
     request: Request,
-    db: Annotated[AsyncSession, Depends(get_db)],
-    current_user: Annotated[User, Depends(get_current_user)],
-) -> BaseSchema[MealTicketResponse]:
-    """Register a one-use meal ticket for the current worker."""
-    if payload.expires_on < _today():
-        raise HTTPException(
-            status_code=Config.HttpStatus.BAD_REQUEST,
-            detail="만료된 식권은 등록할 수 없습니다.",
-        )
-    existing = await db.scalar(
-        select(MealTicket).where(MealTicket.code == payload.code)
-    )
-    if existing is not None:
+    *,
+    restaurant: Restaurant,
+    worker: User,
+    approver_id: int,
+    actor_user_id: str,
+    action: str,
+    meal_type: MealTypeSchema | None,
+    served_date: date | None,
+    meal_price: int | None,
+) -> int:
+    """근로자 지갑에서 식사 금액을 차감하고 사용 내역 id를 돌려준다."""
+    today = _today()
+    served_on = served_date or today
+    price = await _meal_price_for(db, restaurant.id, meal_type, served_on, meal_price)
+
+    buckets = await _available_buckets(db, worker.id, today)
+    allowance_before = sum(bucket.remaining_amount for bucket in buckets)
+    cash_required = max(price - allowance_before, 0)
+    wallet = await _get_or_create_wallet(db, worker.id)
+    if wallet.balance < cash_required:
         raise HTTPException(
             status_code=Config.HttpStatus.CONFLICT,
-            detail="이미 등록된 식권 코드입니다.",
+            detail="부족분을 결제할 캐시 잔액이 부족합니다.",
         )
 
-    ticket = MealTicket(
-        code=payload.code,
-        owner_id=current_user.id,
-        amount=payload.amount,
-        expires_on=payload.expires_on,
+    now = datetime.now(timezone.utc)
+    cash_before = wallet.balance
+    applied, first_bucket = _deduct(buckets, price, now)
+    usage_request = MealTicketUsageRequest(
+        ticket_id=first_bucket.id if first_bucket is not None else None,
+        worker_id=worker.id,
+        restaurant_id=restaurant.id,
+        meal_type=meal_type.value if meal_type else None,
+        served_date=served_on,
+        meal_price=price,
+        ticket_amount_applied=applied,
+        cash_amount_required=cash_required,
+        status="used",
+        approved_at=now,
+        approved_by=approver_id,
     )
     try:
-        db.add(ticket)
+        db.add(usage_request)
         await db.flush()
+        usage_request_id = usage_request.id
+        transaction: CashTransaction | None = None
+        if cash_required > 0:
+            wallet.balance -= cash_required
+            transaction = CashTransaction(
+                user_id=worker.id,
+                usage_request_id=usage_request_id,
+                amount=-cash_required,
+                transaction_type="ticket_shortfall_payment",
+                description=f"ticket request #{usage_request_id} shortfall",
+            )
+            db.add(transaction)
+            await db.flush()
         add_audit_log(
             db,
             AuditLogEntry(
                 request_id=request_id_from_request(request),
-                actor_user_id=current_user.user_id,
-                action="meal_ticket.register",
-                resource_type="meal_ticket",
-                resource_id=ticket.id,
+                actor_user_id=actor_user_id,
+                action=action,
+                resource_type="meal_ticket_usage_request",
+                resource_id=usage_request_id,
+                before={
+                    "allowance_balance": allowance_before,
+                    "cash_balance": cash_before,
+                },
                 after={
-                    "code": ticket.code,
-                    "amount": ticket.amount,
-                    "expires_on": ticket.expires_on.isoformat(),
-                    "status": ticket.status,
+                    "allowance_balance": allowance_before - applied,
+                    "cash_balance": wallet.balance,
+                    "ticket_amount_applied": applied,
+                    "cash_amount_required": cash_required,
+                    "cash_transaction_id": transaction.id if transaction else None,
                 },
             ),
         )
         await db.commit()
-        await db.refresh(ticket)
     except Exception:
         await db.rollback()
         raise
+    return usage_request_id
 
-    return BaseSchema[MealTicketResponse](data=_ticket_response(ticket))
+
+# ---------------------------------------------------------------------------
+# 근로자: 식대 지갑
+# ---------------------------------------------------------------------------
 
 
 @router.get("/worker/tickets")
@@ -218,7 +323,7 @@ async def list_meal_tickets(
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_user)],
 ) -> BaseSchema[list[MealTicketResponse]]:
-    """List tickets owned by the current worker."""
+    """List allowance buckets owned by the current worker."""
     result = await db.execute(
         select(MealTicket)
         .where(MealTicket.owner_id == current_user.id)
@@ -227,6 +332,36 @@ async def list_meal_tickets(
     return BaseSchema[list[MealTicketResponse]](
         data=[_ticket_response(ticket) for ticket in result.scalars().all()]
     )
+
+
+@router.get("/worker/allowance/balance")
+async def get_allowance_balance(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_user)],
+) -> BaseSchema[AllowanceBalanceResponse]:
+    """Return the sum of the worker's unexpired allowance bucket balances."""
+    buckets = await _available_buckets(db, current_user.id, _today())
+    balance = sum(bucket.remaining_amount for bucket in buckets)
+    await db.commit()
+    return BaseSchema[AllowanceBalanceResponse](
+        data=AllowanceBalanceResponse(balance=balance)
+    )
+
+
+@router.get("/worker/qr")
+async def get_worker_qr(
+    request: Request,
+    current_user: Annotated[User, Depends(get_current_user)],
+) -> BaseSchema[WorkerQrResponse]:
+    """Return the scan URL to encode in the worker's QR code."""
+    base = Config.PUBLIC_BASE_URL or str(request.base_url).rstrip("/")
+    url = f"{base}/scan?{urlencode({'worker': current_user.user_id})}"
+    return BaseSchema[WorkerQrResponse](data=WorkerQrResponse(url=url))
+
+
+# ---------------------------------------------------------------------------
+# 관리자: 식대 발급
+# ---------------------------------------------------------------------------
 
 
 def _allowance_response(
@@ -246,7 +381,7 @@ async def issue_meal_allowances(
     db: Annotated[AsyncSession, Depends(get_db)],
     admin_user: Annotated[AdminUserSchema, Depends(get_admin_user)],
 ) -> BaseSchema[list[AllowanceTicketResponse]]:
-    """Issue a meal allowance ticket to each of the given workers (admin only)."""
+    """Issue a meal allowance bucket to each of the given workers (admin only)."""
     if payload.expires_on < _today():
         raise HTTPException(
             status_code=Config.HttpStatus.BAD_REQUEST,
@@ -270,6 +405,7 @@ async def issue_meal_allowances(
                 code=uuid4().hex,
                 owner_id=workers[worker_user_id].id,
                 amount=payload.amount,
+                remaining_amount=payload.amount,
                 expires_on=payload.expires_on,
             )
             db.add(ticket)
@@ -312,7 +448,7 @@ async def list_meal_allowances(
     admin_user: Annotated[AdminUserSchema, Depends(get_admin_user)],
     worker_user_id: Annotated[str | None, Query()] = None,
 ) -> BaseSchema[list[AllowanceTicketResponse]]:
-    """List all meal tickets with their owners for admin overview."""
+    """List all allowance buckets with their owners for admin overview."""
     _ = admin_user
     stmt = (
         select(MealTicket, User.user_id)
@@ -328,6 +464,11 @@ async def list_meal_allowances(
             for ticket, owner_user_id in result.all()
         ]
     )
+
+
+# ---------------------------------------------------------------------------
+# 근로자: 현금성 캐시
+# ---------------------------------------------------------------------------
 
 
 @router.get("/worker/cash/balance")
@@ -410,92 +551,9 @@ async def list_cash_transactions(
     )
 
 
-@router.post("/worker/ticket-usage-requests", status_code=Config.HttpStatus.CREATED)
-async def create_ticket_usage_request(
-    payload: TicketUsageRequestCreate,
-    request: Request,
-    db: Annotated[AsyncSession, Depends(get_db)],
-    current_user: Annotated[User, Depends(get_current_user)],
-) -> BaseSchema[TicketUsageRequestResponse]:
-    """Create a pending meal ticket usage request for restaurant approval."""
-    restaurant = await db.get(Restaurant, payload.restaurant_id)
-    if restaurant is None or not restaurant.is_active:
-        raise HTTPException(
-            status_code=Config.HttpStatus.NOT_FOUND,
-            detail="해당 식당이 존재하지 않습니다.",
-        )
-
-    ticket = await db.scalar(
-        select(MealTicket).where(
-            MealTicket.code == payload.ticket_code,
-            MealTicket.owner_id == current_user.id,
-        )
-    )
-    if ticket is None:
-        raise HTTPException(
-            status_code=Config.HttpStatus.NOT_FOUND,
-            detail="사용 가능한 식권을 찾을 수 없습니다.",
-        )
-    if ticket.status != "available":
-        raise HTTPException(
-            status_code=Config.HttpStatus.CONFLICT,
-            detail="이미 사용 중이거나 사용된 식권입니다.",
-        )
-    if ticket.expires_on < _today():
-        ticket.status = "expired"
-        await db.commit()
-        raise HTTPException(
-            status_code=Config.HttpStatus.BAD_REQUEST,
-            detail="만료된 식권입니다.",
-        )
-
-    meal_price = await _resolve_meal_price(db, payload)
-    ticket_amount_applied = min(ticket.amount, meal_price)
-    cash_amount_required = max(meal_price - ticket_amount_applied, 0)
-    served_date = payload.served_date or _today()
-
-    usage_request = MealTicketUsageRequest(
-        ticket_id=ticket.id,
-        worker_id=current_user.id,
-        restaurant_id=restaurant.id,
-        meal_type=payload.meal_type.value if payload.meal_type else None,
-        served_date=served_date,
-        meal_price=meal_price,
-        ticket_amount_applied=ticket_amount_applied,
-        cash_amount_required=cash_amount_required,
-    )
-    ticket.status = "pending"
-
-    try:
-        db.add(usage_request)
-        await db.flush()
-        add_audit_log(
-            db,
-            AuditLogEntry(
-                request_id=request_id_from_request(request),
-                actor_user_id=current_user.user_id,
-                action="meal_ticket_usage_request.create",
-                resource_type="meal_ticket_usage_request",
-                resource_id=usage_request.id,
-                after={
-                    "ticket_id": ticket.id,
-                    "restaurant_id": restaurant.id,
-                    "meal_price": meal_price,
-                    "ticket_amount_applied": ticket_amount_applied,
-                    "cash_amount_required": cash_amount_required,
-                    "status": usage_request.status,
-                },
-            ),
-        )
-        await db.commit()
-    except Exception:
-        await db.rollback()
-        raise
-
-    usage_request = await _load_usage_request_or_404(db, usage_request.id)
-    return BaseSchema[TicketUsageRequestResponse](
-        data=_usage_request_response(usage_request)
-    )
+# ---------------------------------------------------------------------------
+# 사용 내역 조회
+# ---------------------------------------------------------------------------
 
 
 @router.get("/worker/ticket-usage-requests")
@@ -503,7 +561,7 @@ async def list_worker_ticket_usage_requests(
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_user)],
 ) -> BaseSchema[list[TicketUsageRequestResponse]]:
-    """List ticket usage requests owned by the current worker."""
+    """List meal payments made from the current worker's wallet."""
     result = await db.execute(
         select(MealTicketUsageRequest)
         .where(MealTicketUsageRequest.worker_id == current_user.id)
@@ -527,13 +585,15 @@ async def list_worker_ticket_usage_requests(
 
 
 @router.get("/restaurants/{restaurant_id}/ticket-usage-requests")
-async def list_restaurant_ticket_usage_requests(
+async def list_restaurant_ticket_usage_requests(  # noqa: PLR0913
     restaurant_id: int,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_user)],
     status: Annotated[TicketUsageRequestStatus | None, Query()] = None,
+    date_from: Annotated[date | None, Query(description="제공일 시작(포함)")] = None,
+    date_to: Annotated[date | None, Query(description="제공일 끝(포함)")] = None,
 ) -> BaseSchema[list[TicketUsageRequestResponse]]:
-    """List ticket usage requests for a restaurant owner, manager, or admin."""
+    """List meal payments received by a restaurant (owner, manager, or admin)."""
     _ = await get_restaurant_with_permission(restaurant_id, db, current_user)
     stmt = (
         select(MealTicketUsageRequest)
@@ -551,6 +611,10 @@ async def list_restaurant_ticket_usage_requests(
     )
     if status is not None:
         stmt = stmt.where(MealTicketUsageRequest.status == status)
+    if date_from is not None:
+        stmt = stmt.where(MealTicketUsageRequest.served_date >= date_from)
+    if date_to is not None:
+        stmt = stmt.where(MealTicketUsageRequest.served_date <= date_to)
     result = await db.execute(stmt)
     return BaseSchema[list[TicketUsageRequestResponse]](
         data=[
@@ -560,243 +624,205 @@ async def list_restaurant_ticket_usage_requests(
     )
 
 
-@router.post("/restaurants/{restaurant_id}/ticket-usage-requests/{request_id}/approval")
-async def approve_ticket_usage_request(
+@router.get("/restaurants/{restaurant_id}/revenue")
+async def get_restaurant_revenue(
     restaurant_id: int,
-    request_id: int,
-    request: Request,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_user)],
-) -> BaseSchema[TicketUsageRequestResponse]:
-    """Approve a pending ticket usage request and mark the ticket as used."""
+    date_from: Annotated[
+        date | None, Query(description="제공일 시작(포함), 기본 오늘")
+    ] = None,
+    date_to: Annotated[
+        date | None, Query(description="제공일 끝(포함), 기본 date_from")
+    ] = None,
+) -> BaseSchema[RestaurantRevenueResponse]:
+    """식당 매출 합계와 일별 내역 (주인·매니저·관리자). 결제 즉시 반영된다."""
     _ = await get_restaurant_with_permission(restaurant_id, db, current_user)
-    usage_request = await _load_usage_request_or_404(db, request_id)
-    if usage_request.restaurant_id != restaurant_id:
-        raise HTTPException(
-            status_code=Config.HttpStatus.NOT_FOUND,
-            detail="식당의 식권 사용 요청을 찾을 수 없습니다.",
-        )
-    if usage_request.status != "pending":
-        raise HTTPException(
-            status_code=Config.HttpStatus.CONFLICT,
-            detail="이미 처리된 식권 사용 요청입니다.",
-        )
-    if usage_request.ticket.status != "pending":
-        raise HTTPException(
-            status_code=Config.HttpStatus.CONFLICT,
-            detail="처리할 수 없는 식권 상태입니다.",
-        )
-    if usage_request.ticket.expires_on < _today():
-        usage_request.ticket.status = "expired"
-        await db.commit()
+    start = date_from or _today()
+    end = date_to or start
+    if end < start:
         raise HTTPException(
             status_code=Config.HttpStatus.BAD_REQUEST,
-            detail="만료된 식권입니다.",
+            detail="date_to는 date_from보다 앞설 수 없습니다.",
         )
-
-    wallet = await _get_or_create_wallet(db, usage_request.worker_id)
-    if wallet.balance < usage_request.cash_amount_required:
-        raise HTTPException(
-            status_code=Config.HttpStatus.CONFLICT,
-            detail="부족분을 결제할 캐시 잔액이 부족합니다.",
+    rows = (
+        await db.execute(
+            select(
+                MealTicketUsageRequest.served_date,
+                func.count(MealTicketUsageRequest.id),
+                func.coalesce(func.sum(MealTicketUsageRequest.meal_price), 0),
+                func.coalesce(
+                    func.sum(MealTicketUsageRequest.ticket_amount_applied), 0
+                ),
+                func.coalesce(func.sum(MealTicketUsageRequest.cash_amount_required), 0),
+            )
+            .where(
+                MealTicketUsageRequest.restaurant_id == restaurant_id,
+                MealTicketUsageRequest.status == "used",
+                MealTicketUsageRequest.served_date >= start,
+                MealTicketUsageRequest.served_date <= end,
+            )
+            .group_by(MealTicketUsageRequest.served_date)
+            .order_by(MealTicketUsageRequest.served_date)
         )
-
-    before = {
-        "request_status": usage_request.status,
-        "ticket_status": usage_request.ticket.status,
-        "cash_balance": wallet.balance,
-    }
-    usage_request.status = "used"
-    usage_request.approved_at = datetime.now(timezone.utc)
-    usage_request.approved_by = current_user.id
-    usage_request.ticket.status = "used"
-    usage_request.ticket.used_at = usage_request.approved_at
-
-    transaction: CashTransaction | None = None
-    if usage_request.cash_amount_required > 0:
-        wallet.balance -= usage_request.cash_amount_required
-        transaction = CashTransaction(
-            user_id=usage_request.worker_id,
-            usage_request_id=usage_request.id,
-            amount=-usage_request.cash_amount_required,
-            transaction_type="ticket_shortfall_payment",
-            description=f"ticket request #{usage_request.id} shortfall",
+    ).all()
+    by_day = [
+        RevenueRow(
+            served_date=row[0],
+            transaction_count=row[1],
+            total_amount=row[2],
+            allowance_amount=row[3],
+            cash_amount=row[4],
         )
-        db.add(transaction)
-
-    try:
-        if transaction is not None:
-            await db.flush()
-        add_audit_log(
-            db,
-            AuditLogEntry(
-                request_id=request_id_from_request(request),
-                actor_user_id=current_user.user_id,
-                action="meal_ticket_usage_request.approve",
-                resource_type="meal_ticket_usage_request",
-                resource_id=usage_request.id,
-                before=before,
-                after={
-                    "request_status": usage_request.status,
-                    "ticket_status": usage_request.ticket.status,
-                    "cash_balance": wallet.balance,
-                    "cash_transaction_id": transaction.id if transaction else None,
-                },
-            ),
+        for row in rows
+    ]
+    return BaseSchema[RestaurantRevenueResponse](
+        data=RestaurantRevenueResponse(
+            restaurant_id=restaurant_id,
+            date_from=start,
+            date_to=end,
+            transaction_count=sum(r.transaction_count for r in by_day),
+            total_amount=sum(r.total_amount for r in by_day),
+            allowance_amount=sum(r.allowance_amount for r in by_day),
+            cash_amount=sum(r.cash_amount for r in by_day),
+            by_day=by_day,
         )
-        await db.commit()
-    except Exception:
-        await db.rollback()
-        raise
-
-    usage_request = await _load_usage_request_or_404(db, request_id)
-    return BaseSchema[TicketUsageRequestResponse](
-        data=_usage_request_response(usage_request)
     )
+
+
+# ---------------------------------------------------------------------------
+# 식당: 스캔 결제
+# ---------------------------------------------------------------------------
+
+
+async def _load_worker_or_404(db: AsyncSession, worker_user_id: str) -> User:
+    worker = await db.scalar(select(User).where(User.user_id == worker_user_id))
+    if worker is None:
+        raise HTTPException(
+            status_code=Config.HttpStatus.NOT_FOUND,
+            detail="등록되지 않은 근로자입니다.",
+        )
+    return worker
 
 
 @router.post(
     "/restaurants/{restaurant_id}/ticket-scans",
     status_code=Config.HttpStatus.CREATED,
 )
-async def scan_and_redeem_ticket(
+async def scan_and_charge_wallet(
     restaurant_id: int,
     payload: TicketScanCreate,
     request: Request,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_user)],
 ) -> BaseSchema[TicketUsageRequestResponse]:
-    """Redeem a scanned ticket code in one step for restaurant scanner devices.
-
-    The caller must be the restaurant owner, a manager, or an admin. An
-    "available" ticket gets a usage request created and approved atomically;
-    a ticket already "pending" for this restaurant gets its request approved.
-    """
+    """Charge a scanned worker's allowance wallet as the restaurant owner, manager, or admin."""
     restaurant = await get_restaurant_with_permission(restaurant_id, db, current_user)
-
-    ticket = await db.scalar(
-        select(MealTicket).where(MealTicket.code == payload.ticket_code)
+    worker = await _load_worker_or_404(db, payload.worker_user_id)
+    usage_request_id = await _charge_wallet(
+        db,
+        request,
+        restaurant=restaurant,
+        worker=worker,
+        approver_id=current_user.id,
+        actor_user_id=current_user.user_id,
+        action="meal_ticket_usage_request.scan_redeem",
+        meal_type=payload.meal_type,
+        served_date=payload.served_date,
+        meal_price=payload.meal_price,
     )
-    if ticket is None:
-        raise HTTPException(
-            status_code=Config.HttpStatus.NOT_FOUND,
-            detail="등록되지 않은 식권 코드입니다.",
-        )
-    if ticket.status in ("used", "expired"):
-        raise HTTPException(
-            status_code=Config.HttpStatus.CONFLICT,
-            detail="이미 사용되었거나 만료된 식권입니다.",
-        )
-    if ticket.expires_on < _today():
-        ticket.status = "expired"
-        await db.commit()
-        raise HTTPException(
-            status_code=Config.HttpStatus.BAD_REQUEST,
-            detail="만료된 식권입니다.",
-        )
+    usage_request = await _load_usage_request_or_404(db, usage_request_id)
+    return BaseSchema[TicketUsageRequestResponse](
+        data=_usage_request_response(usage_request)
+    )
 
-    original_ticket_status = ticket.status
-    if ticket.status == "pending":
-        usage_request = await db.scalar(
-            select(MealTicketUsageRequest).where(
-                MealTicketUsageRequest.ticket_id == ticket.id,
-                MealTicketUsageRequest.status == "pending",
-            )
-        )
-        if usage_request is None or usage_request.restaurant_id != restaurant.id:
-            raise HTTPException(
-                status_code=Config.HttpStatus.CONFLICT,
-                detail="다른 식당에 사용 요청 중인 식권입니다.",
-            )
-    else:
-        served_date = payload.served_date or _today()
-        if payload.meal_price is not None:
-            meal_price = payload.meal_price
-        else:
-            resolved = await resolve_price(
-                db,
-                restaurant_id=restaurant.id,
-                meal_type=payload.meal_type,
-                served_date=served_date,
-            )
-            if resolved.price is None:
-                raise HTTPException(
-                    status_code=Config.HttpStatus.BAD_REQUEST,
-                    detail="가격 정책이 없어 meal_price를 입력해야 합니다.",
-                )
-            meal_price = resolved.price
-        ticket_amount_applied = min(ticket.amount, meal_price)
-        usage_request = MealTicketUsageRequest(
-            ticket_id=ticket.id,
-            worker_id=ticket.owner_id,
-            restaurant_id=restaurant.id,
-            meal_type=payload.meal_type.value if payload.meal_type else None,
-            served_date=served_date,
-            meal_price=meal_price,
-            ticket_amount_applied=ticket_amount_applied,
-            cash_amount_required=max(meal_price - ticket_amount_applied, 0),
-        )
-        ticket.status = "pending"
-        db.add(usage_request)
-        await db.flush()
 
-    wallet = await _get_or_create_wallet(db, usage_request.worker_id)
-    if wallet.balance < usage_request.cash_amount_required:
-        # 스캔 중 만든 사용 요청/상태 변경을 되돌려 식권을 다시 사용 가능하게 둔다.
-        await db.rollback()
-        raise HTTPException(
-            status_code=Config.HttpStatus.CONFLICT,
-            detail="부족분을 결제할 캐시 잔액이 부족합니다.",
-        )
-
-    before = {
-        "ticket_status": original_ticket_status,
-        "cash_balance": wallet.balance,
-    }
-    usage_request.status = "used"
-    usage_request.approved_at = datetime.now(timezone.utc)
-    usage_request.approved_by = current_user.id
-    ticket.status = "used"
-    ticket.used_at = usage_request.approved_at
-
-    transaction: CashTransaction | None = None
-    if usage_request.cash_amount_required > 0:
-        wallet.balance -= usage_request.cash_amount_required
-        transaction = CashTransaction(
-            user_id=usage_request.worker_id,
-            usage_request_id=usage_request.id,
-            amount=-usage_request.cash_amount_required,
-            transaction_type="ticket_shortfall_payment",
-            description=f"ticket request #{usage_request.id} shortfall",
-        )
-        db.add(transaction)
-
+@router.post(
+    "/restaurants/{restaurant_id}/scanner-key",
+    status_code=Config.HttpStatus.CREATED,
+)
+async def issue_scanner_key(
+    restaurant_id: int,
+    request: Request,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_user)],
+) -> BaseSchema[ScannerKeyResponse]:
+    """Issue (or rotate) the QR scanner device key for a restaurant. Shown once."""
+    restaurant = await get_restaurant_with_permission(restaurant_id, db, current_user)
+    key = secrets.token_urlsafe(32)
+    rotated = restaurant.scanner_key_hash is not None
+    restaurant.scanner_key_hash = _hash_key(key)
     try:
-        if transaction is not None:
-            await db.flush()
         add_audit_log(
             db,
             AuditLogEntry(
                 request_id=request_id_from_request(request),
                 actor_user_id=current_user.user_id,
-                action="meal_ticket_usage_request.scan_redeem",
-                resource_type="meal_ticket_usage_request",
-                resource_id=usage_request.id,
-                before=before,
-                after={
-                    "request_status": usage_request.status,
-                    "ticket_status": ticket.status,
-                    "cash_balance": wallet.balance,
-                    "cash_transaction_id": transaction.id if transaction else None,
-                },
+                action="restaurant.scanner_key.issue",
+                resource_type="restaurant",
+                resource_id=restaurant.id,
+                after={"rotated": rotated},
             ),
         )
         await db.commit()
     except Exception:
         await db.rollback()
         raise
+    return BaseSchema[ScannerKeyResponse](
+        data=ScannerKeyResponse(scanner_key=key, header=SCANNER_KEY_HEADER)
+    )
 
-    usage_request = await _load_usage_request_or_404(db, usage_request.id)
+
+@router.get("/scan", dependencies=[Depends(optional_metrics_x_user_id)])
+async def scan_qr(
+    request: Request,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    worker: Annotated[
+        str, Query(min_length=1, description="근로자 user_id (QR URL에 포함)")
+    ],
+    x_scanner_key: Annotated[
+        str | None,
+        Header(
+            alias=SCANNER_KEY_HEADER,
+            description="식당 스캐너 기기 키 (펌웨어가 붙이는 고정 헤더)",
+        ),
+    ] = None,
+    meal_type: Annotated[MealTypeSchema | None, Query()] = None,
+) -> BaseSchema[TicketUsageRequestResponse]:
+    """QR 기기 진입점: 근로자 QR의 URL을 그대로 GET 하면 지갑 결제가 완료된다.
+
+    인증은 Bearer 토큰이 아니라 기기 고정 헤더 ``X-Scanner-Key``로 한다.
+    """
+    if not x_scanner_key:
+        raise HTTPException(
+            status_code=Config.HttpStatus.UNAUTHORIZED,
+            detail=f"{SCANNER_KEY_HEADER} 헤더가 필요합니다.",
+        )
+    restaurant = await db.scalar(
+        select(Restaurant).where(
+            Restaurant.scanner_key_hash == _hash_key(x_scanner_key),
+            Restaurant.is_active.is_(True),
+        )
+    )
+    if restaurant is None:
+        raise HTTPException(
+            status_code=Config.HttpStatus.UNAUTHORIZED,
+            detail="유효하지 않은 스캐너 키입니다.",
+        )
+    worker_user = await _load_worker_or_404(db, worker.strip())
+    usage_request_id = await _charge_wallet(
+        db,
+        request,
+        restaurant=restaurant,
+        worker=worker_user,
+        approver_id=restaurant.owner,
+        actor_user_id=f"scanner:restaurant:{restaurant.id}",
+        action="meal_ticket_usage_request.qr_scan",
+        meal_type=meal_type,
+        served_date=None,
+        meal_price=None,
+    )
+    usage_request = await _load_usage_request_or_404(db, usage_request_id)
     return BaseSchema[TicketUsageRequestResponse](
         data=_usage_request_response(usage_request)
     )

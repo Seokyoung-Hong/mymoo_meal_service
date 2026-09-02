@@ -65,6 +65,10 @@ docker compose down
 - `TIMEZONE`: 기본 `Asia/Seoul`
 - `DATABASE_URL`: 명시 시 `POSTGRES_*`보다 우선
 
+## 관련 문서
+
+- [QR 스캐너 기기 연동 규칙](docs/qr-scanner.md) — 근로자 QR URL 형식, 기기 고정 헤더, 스캐너 키 발급, 응답 코드
+
 ## 운영 메모
 
 - Docker Compose는 앱과 PostgreSQL을 함께 실행합니다.
