@@ -41,6 +41,68 @@ POST /restaurants/{restaurant_id}/scanner-key
 - 키 원문은 응답에 한 번만 나온다. 서버에는 sha256만 저장된다.
 - 다시 호출하면 새 키가 발급되고 이전 키는 즉시 무효가 된다 (기기 분실·교체 시 사용).
 
+### 3-1. CLI로 발급하기 (운영자, 서비스 계정 토큰)
+
+배포 서버의 `siksabu_infra/.env`에 있는 서버 간 호출용 confidential client
+(`MEAL_SERVICE_CLIENT_ID` / `MEAL_SERVICE_CLIENT_SECRET`, DEPLOYMENT.md §4-3)는
+`meal_admin` client role을 가지므로 모든 식당의 키를 발급할 수 있다. `jq`가 필요하다.
+
+```bash
+# 0. 값 준비 (배포 서버라면 .env에서 그대로 읽는다)
+set -a; . siksabu_infra/.env; set +a
+BASE=https://mymoo.quanect.kr/meal
+KC=https://auth.quanect.kr/realms/Mymoo/protocol/openid-connect/token
+
+# 1. 서비스 계정 토큰
+TOKEN=$(curl -s -X POST "$KC" \
+  -d grant_type=client_credentials \
+  -d client_id="$MEAL_SERVICE_CLIENT_ID" \
+  -d client_secret="$MEAL_SERVICE_CLIENT_SECRET" | jq -r .access_token)
+
+# 2. 식당 ID 확인 (응답 data에서 id·name을 본다)
+curl -s "$BASE/restaurants/" | jq .
+
+# 3. 키 발급 — scanner_key는 이 응답에서만 볼 수 있다
+curl -s -X POST "$BASE/restaurants/<RESTAURANT_ID>/scanner-key" \
+  -H "Authorization: Bearer $TOKEN" | jq .data
+```
+
+응답 예:
+
+```json
+{ "scanner_key": "Qm9...", "header": "X-Scanner-Key" }
+```
+
+`scanner_key` 값을 기기 펌웨어의 고정 헤더 값으로 넣는다.
+
+### 3-2. CLI로 발급하기 (식당 주인 본인 계정)
+
+식당 주인이 직접 하려면 Keycloak 사용자 토큰이 필요하다. `mymoo-test-web` 클라이언트에
+**Direct Access Grants**가 켜져 있어야 password grant가 동작한다 (Keycloak 관리 콘솔 →
+Clients → mymoo-test-web → Capability config).
+
+```bash
+TOKEN=$(curl -s -X POST "$KC" \
+  -d grant_type=password -d client_id=mymoo-test-web \
+  -d username="<keycloak 아이디>" -d password="<비밀번호>" | jq -r .access_token)
+
+curl -s "$BASE/restaurants/mine" -H "Authorization: Bearer $TOKEN" | jq .   # 내 식당 id
+curl -s -X POST "$BASE/restaurants/<RESTAURANT_ID>/scanner-key" \
+  -H "Authorization: Bearer $TOKEN" | jq .data
+```
+
+Direct Access Grants가 꺼져 있으면 테스트 포털(`/test-web/`)에 로그인해
+식당 화면의 "스캐너 키 발급(교체)" 버튼을 쓴다.
+
+### 3-3. 발급 확인
+
+```bash
+# 401이면 키가 틀린 것, 404면 근로자 미등록, 200이면 결제까지 실행되므로 실제 근로자 id로는 시험하지 말 것
+curl -s -i "$BASE/scan?worker=probe" -H "X-Scanner-Key: <발급받은 키>" | head -1
+```
+
+`probe`처럼 존재하지 않는 근로자 id로 호출하면 키가 맞을 때 404, 틀릴 때 401이 나온다.
+
 ## 4. 서버 처리와 응답
 
 1. `X-Scanner-Key`로 활성 식당을 찾는다.
