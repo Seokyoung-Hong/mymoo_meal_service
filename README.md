@@ -68,6 +68,7 @@ docker compose down
 ## 관련 문서
 
 - [QR 스캐너 기기 연동 규칙](docs/qr-scanner.md) — 근로자 QR URL 형식, 기기 고정 헤더, 스캐너 키 발급, 응답 코드
+- [실시간 이벤트 (SSE)](docs/sse-events.md) — `GET /worker/events`, `GET /restaurants/{id}/events`, 이벤트 종류와 페이로드
 
 ## 운영 메모
 

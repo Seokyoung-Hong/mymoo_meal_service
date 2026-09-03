@@ -23,6 +23,7 @@ from urllib.parse import urlencode
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
+from fastapi.responses import StreamingResponse
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
@@ -58,6 +59,7 @@ from app.schemas.worker import (
 from app.services.audit import AuditLogEntry, add_audit_log, request_id_from_request
 from app.services.pricing import resolve_price
 from app.utils.auth import optional_metrics_x_user_id
+from app.utils.events import publish, sse_response
 from app.utils.db import get_admin_user, get_current_user, get_db
 from app.utils.restaurants import get_restaurant_with_permission
 
@@ -237,8 +239,8 @@ async def _charge_wallet(  # noqa: PLR0913
     meal_type: MealTypeSchema | None,
     served_date: date | None,
     meal_price: int | None,
-) -> int:
-    """근로자 지갑에서 식사 금액을 차감하고 사용 내역 id를 돌려준다."""
+) -> TicketUsageRequestResponse:
+    """근로자 지갑에서 식사 금액을 차감하고 사용 내역을 돌려준다. 커밋 후 SSE로 알린다."""
     today = _today()
     served_on = served_date or today
     price = await _meal_price_for(db, restaurant.id, meal_type, served_on, meal_price)
@@ -310,7 +312,21 @@ async def _charge_wallet(  # noqa: PLR0913
     except Exception:
         await db.rollback()
         raise
-    return usage_request_id
+    response = _usage_request_response(
+        await _load_usage_request_or_404(db, usage_request_id)
+    )
+    payment = {"usage_request": response.model_dump(mode="json")}
+    publish(f"restaurant:{restaurant.id}", "payment", payment)
+    publish(
+        f"worker:{worker.id}",
+        "payment",
+        {
+            **payment,
+            "allowance_balance": allowance_before - applied,
+            "cash_balance": wallet.balance,
+        },
+    )
+    return response
 
 
 # ---------------------------------------------------------------------------
@@ -346,6 +362,16 @@ async def get_allowance_balance(
     return BaseSchema[AllowanceBalanceResponse](
         data=AllowanceBalanceResponse(balance=balance)
     )
+
+
+@router.get("/worker/events", response_class=StreamingResponse)
+async def worker_events(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_user)],
+) -> StreamingResponse:
+    """SSE: 내 지갑 변동 (``payment`` / ``cash_charged`` / ``allowance_issued``)."""
+    await db.close()  # 스트림이 열려 있는 동안 DB 커넥션을 붙들지 않는다.
+    return sse_response(f"worker:{current_user.id}")
 
 
 @router.get("/worker/qr")
@@ -439,6 +465,16 @@ async def issue_meal_allowances(
         await db.rollback()
         raise
 
+    for ticket, worker_user_id in issued:
+        publish(
+            f"worker:{ticket.owner_id}",
+            "allowance_issued",
+            {
+                "ticket": _allowance_response(ticket, worker_user_id).model_dump(
+                    mode="json"
+                )
+            },
+        )
     return BaseSchema[list[AllowanceTicketResponse]](data=data)
 
 
@@ -527,9 +563,13 @@ async def mock_card_charge(
         await db.rollback()
         raise
 
-    return BaseSchema[CashTransactionResponse](
-        data=_cash_transaction_response(transaction)
+    data = _cash_transaction_response(transaction)
+    publish(
+        f"worker:{current_user.id}",
+        "cash_charged",
+        {"cash_balance": wallet.balance, "transaction": data.model_dump(mode="json")},
     )
+    return BaseSchema[CashTransactionResponse](data=data)
 
 
 @router.get("/worker/cash/transactions")
@@ -622,6 +662,18 @@ async def list_restaurant_ticket_usage_requests(  # noqa: PLR0913
             for usage_request in result.scalars().all()
         ]
     )
+
+
+@router.get("/restaurants/{restaurant_id}/events", response_class=StreamingResponse)
+async def restaurant_events(
+    restaurant_id: int,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_user)],
+) -> StreamingResponse:
+    """SSE: 이 식당의 결제 발생 (``payment``). 주인·매니저·관리자."""
+    _ = await get_restaurant_with_permission(restaurant_id, db, current_user)
+    await db.close()
+    return sse_response(f"restaurant:{restaurant_id}")
 
 
 @router.get("/restaurants/{restaurant_id}/revenue")
@@ -719,7 +771,7 @@ async def scan_and_charge_wallet(
     """Charge a scanned worker's allowance wallet as the restaurant owner, manager, or admin."""
     restaurant = await get_restaurant_with_permission(restaurant_id, db, current_user)
     worker = await _load_worker_or_404(db, payload.worker_user_id)
-    usage_request_id = await _charge_wallet(
+    data = await _charge_wallet(
         db,
         request,
         restaurant=restaurant,
@@ -731,10 +783,7 @@ async def scan_and_charge_wallet(
         served_date=payload.served_date,
         meal_price=payload.meal_price,
     )
-    usage_request = await _load_usage_request_or_404(db, usage_request_id)
-    return BaseSchema[TicketUsageRequestResponse](
-        data=_usage_request_response(usage_request)
-    )
+    return BaseSchema[TicketUsageRequestResponse](data=data)
 
 
 @router.post(
@@ -810,7 +859,7 @@ async def scan_qr(
             detail="유효하지 않은 스캐너 키입니다.",
         )
     worker_user = await _load_worker_or_404(db, worker.strip())
-    usage_request_id = await _charge_wallet(
+    data = await _charge_wallet(
         db,
         request,
         restaurant=restaurant,
@@ -822,7 +871,4 @@ async def scan_qr(
         served_date=None,
         meal_price=None,
     )
-    usage_request = await _load_usage_request_or_404(db, usage_request_id)
-    return BaseSchema[TicketUsageRequestResponse](
-        data=_usage_request_response(usage_request)
-    )
+    return BaseSchema[TicketUsageRequestResponse](data=data)
