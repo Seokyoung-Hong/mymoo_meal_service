@@ -7,7 +7,7 @@ from typing import Any
 from main import app
 
 
-PUBLIC_GET_OPERATIONS = {
+PUBLIC_OPERATIONS = {  # 인증 없이 부르는 엔드포인트 (기기·브라우저 진입점 포함)
     ("/", "get"),
     ("/health", "get"),
     ("/meals", "get"),
@@ -22,6 +22,7 @@ PUBLIC_GET_OPERATIONS = {
     ("/restaurants/{restaurant_id}", "get"),
     ("/images/{file_name}", "get"),
     ("/scan", "get"),
+    ("/relay", "post"),
 }
 
 
@@ -60,7 +61,7 @@ def test_openapi_bearer_security_and_public_metrics_headers() -> None:
             assert "Authorization" not in header_names
             assert "authorization" not in header_names
 
-            if operation_key in PUBLIC_GET_OPERATIONS:
+            if operation_key in PUBLIC_OPERATIONS:
                 assert "security" not in operation
                 assert "X-User-ID" in header_names
                 x_user_id = next(
@@ -77,7 +78,7 @@ def test_openapi_bearer_security_and_public_metrics_headers() -> None:
                 assert "X-User-ID" not in header_names
                 assert "x-user-id" not in header_names
 
-    assert PUBLIC_GET_OPERATIONS <= seen_operations
+    assert PUBLIC_OPERATIONS <= seen_operations
     assert ("/restaurants/mine", "get") in seen_operations
     assert ("/restaurants/mine/{restaurant_id}", "get") in seen_operations
     assert ("/admin/restaurants/", "get") in seen_operations

@@ -4,9 +4,11 @@
 또한, meal_types.json 파일에서 식사 유형을 불러오는 기능도 포함되어 있습니다.
 """
 
+import hashlib
 import os
 import logging
 import json
+import secrets
 from dotenv import load_dotenv
 from pytz import timezone
 
@@ -84,6 +86,21 @@ def comma_separated_env(name: str, default: str = "") -> list[str]:
     ]
 
 
+def relay_token_secret() -> bytes:
+    """BLE 중계 식권 토큰(``tok``) 서명 키. 32바이트 hex 또는 임의 문자열."""
+    raw = os.getenv("RELAY_TOKEN_SECRET", "").strip()
+    if not raw:
+        logger.warning(
+            "⚠️ RELAY_TOKEN_SECRET 미설정: 임시 키를 만든다. "
+            "프로세스를 재시작하면 발급된 식권 토큰이 무효가 된다."
+        )
+        return secrets.token_bytes(32)
+    try:
+        return bytes.fromhex(raw)
+    except ValueError:
+        return hashlib.sha256(raw.encode("utf-8")).digest()
+
+
 class Config:
     """FastAPI 설정 값을 관리하는 클래스
 
@@ -110,6 +127,8 @@ class Config:
     # 근로자 QR에 담기는 스캔 URL의 공개 베이스(예: https://api.example.com/meal).
     # 비어 있으면 요청의 base_url(root_path 포함)을 사용한다.
     PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "").rstrip("/")
+    # BLE 중계(POST /relay)에서 쓰는 식권 토큰 서명 키. 서버만 안다.
+    RELAY_TOKEN_SECRET = relay_token_secret()
     TZ = timezone(TIMEZONE)
     CORS_ALLOW_ORIGINS = comma_separated_env(
         "CORS_ALLOW_ORIGINS",
@@ -178,6 +197,7 @@ class Config:
         CONFLICT = 409
         PAYLOAD_TOO_LARGE = 413
         UNPROCESSABLE_ENTITY = 422
+        TOO_MANY_REQUESTS = 429
         INTERNAL_SERVER_ERROR = 500
 
     @staticmethod

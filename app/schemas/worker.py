@@ -51,9 +51,24 @@ class AllowanceBalanceResponse(BaseModel):
 
 
 class WorkerQrResponse(BaseModel):
-    """URL to encode in the worker's QR code; scanner devices GET it as-is."""
+    """Worker QR payloads: the legacy scan URL and the signed BLE relay token."""
 
     url: str
+    # BLE 리더용 36바이트 식권 토큰(base64url). Keycloak sub가 UUID가 아니면 None.
+    tok: str | None = None
+    ttl: int
+
+
+class RelayRequest(BaseModel):
+    """BLE 중계 요청 본문. ``req``는 리더가 서명한 87바이트(base64url)."""
+
+    req: str
+
+
+class RelayResponse(BaseModel):
+    """BLE 중계 응답 본문. ``resp``는 서버가 서명한 62바이트(base64url)."""
+
+    resp: str
 
 
 class ScannerKeyResponse(BaseModel):
