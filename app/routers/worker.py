@@ -15,6 +15,8 @@ QR 기기 규칙 (``GET /scan``):
 BLE 중계 규칙 (``POST /relay``, docs/ble-relay.md):
 - 리더가 87바이트 요청을 스캐너 키로 서명하고, 근로자 폰(또는 리더 자신)이 그대로 중계한다.
 - 서버는 같은 키로 검증·결제하고 62바이트 응답에 서명한다. 폰은 바이트를 옮길 뿐이다.
+- 결과를 못 받아 QR을 다시 찍으면 87바이트가 통째로 달라진다. 그래서 (식당, 근로자)
+  단위로도 최근 결정을 재사용해 한 끼에 두 번 청구되는 것을 막는다.
 """
 
 from __future__ import annotations
@@ -33,7 +35,7 @@ from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
@@ -821,6 +823,8 @@ async def issue_scanner_key(
     restaurant = await get_restaurant_with_permission(restaurant_id, db, current_user)
     key = secrets.token_urlsafe(32)
     rotated = restaurant.scanner_key_hash is not None
+    # 기기에 새 키를 심기 전까지 옛 키도 통과시킨다(새 키 결제가 한 번 성공하면 폐기).
+    restaurant.scanner_key_hash_prev = restaurant.scanner_key_hash
     restaurant.scanner_key_hash = _hash_key(key)
     try:
         add_audit_log(
@@ -831,7 +835,7 @@ async def issue_scanner_key(
                 action="restaurant.scanner_key.issue",
                 resource_type="restaurant",
                 resource_id=restaurant.id,
-                after={"rotated": rotated},
+                after={"rotated": rotated, "prev_kept": rotated},
             ),
         )
         await db.commit()
@@ -868,9 +872,13 @@ async def scan_qr(
             status_code=Config.HttpStatus.UNAUTHORIZED,
             detail=f"{SCANNER_KEY_HEADER} 헤더가 필요합니다.",
         )
+    key_hash = _hash_key(x_scanner_key)
     restaurant = await db.scalar(
         select(Restaurant).where(
-            Restaurant.scanner_key_hash == _hash_key(x_scanner_key),
+            or_(
+                Restaurant.scanner_key_hash == key_hash,
+                Restaurant.scanner_key_hash_prev == key_hash,
+            ),
             Restaurant.is_active.is_(True),
         )
     )
@@ -879,6 +887,9 @@ async def scan_qr(
             status_code=Config.HttpStatus.UNAUTHORIZED,
             detail="유효하지 않은 스캐너 키입니다.",
         )
+    if restaurant.scanner_key_hash == key_hash:
+        # 새 키로 결제가 성공하면 유예 키를 버린다(결제와 같은 트랜잭션에서 커밋된다).
+        restaurant.scanner_key_hash_prev = None
     worker_user = await _load_worker_or_404(db, worker.strip())
     data = await _charge_wallet(
         db,
@@ -918,6 +929,10 @@ RELAY_QR_EXPIRED = 5
 # app/utils/events.py의 SSE 큐와 같은 가정이다. 워커를 늘리면 Redis로 옮긴다.
 _relay_replies: dict[bytes, tuple[float, bytes]] = {}
 _relay_hits: dict[str, tuple[int, int]] = {}
+# (식당 id, 근로자 user_id) -> (첫 결정 시각, (status, price, applied, cash, txid))
+_relay_decisions: dict[
+    tuple[int, str], tuple[float, tuple[int, int, int, int, int]]
+] = {}
 
 
 def _b64url(raw: bytes) -> str:
@@ -993,6 +1008,42 @@ def _relay_remember(digest: bytes, response: bytes) -> None:
     _relay_replies[digest] = (now, response)
 
 
+def _relay_decision(key: tuple[int, str]) -> tuple[int, int, int, int, int] | None:
+    """(식당, 근로자)로 최근에 내린 결정. 창 시작은 첫 결정 시각이라 재사용해도 늘지 않는다."""
+    hit = _relay_decisions.get(key)
+    if hit is None or time.monotonic() - hit[0] >= Config.RELAY_DECISION_TTL_SECONDS:
+        return None
+    return hit[1]
+
+
+def _relay_remember_decision(
+    key: tuple[int, str], decision: tuple[int, int, int, int, int]
+) -> None:
+    now = time.monotonic()
+    for stale, (decided_at, _) in list(_relay_decisions.items()):
+        if now - decided_at >= Config.RELAY_DECISION_TTL_SECONDS:
+            del _relay_decisions[stale]
+    _relay_decisions[key] = (now, decision)
+
+
+def _relay_matching_key(
+    restaurant: Restaurant, req: bytes
+) -> tuple[bytes | None, bool]:
+    """요청 mac을 현재 키·교체 유예 키 순서로 검증한다. (맞은 키, 현재 키였는지)."""
+    for key_hash, is_current in (
+        (restaurant.scanner_key_hash, True),
+        (restaurant.scanner_key_hash_prev, False),
+    ):
+        if key_hash is None:
+            continue
+        key = bytes.fromhex(key_hash)
+        if hmac.compare_digest(
+            req[55:], hmac.new(key, req[:55], hashlib.sha256).digest()
+        ):
+            return key, is_current
+    return None, False
+
+
 def _relay_client_key(request: Request) -> str:
     """요청자 식별 키. 프록시 뒤라 X-Forwarded-For 첫 홉을 먼저 본다."""
     forwarded = request.headers.get("X-Forwarded-For", "")
@@ -1012,18 +1063,33 @@ def _relay_rate_limited(client: str) -> bool:
     return count > RELAY_MAX_PER_SECOND
 
 
-async def _relay_charge(
+async def _relay_charge(  # noqa: PLR0913
     db: AsyncSession,
     request: Request,
     restaurant: Restaurant,
     worker_user_id: str,
     nonce: bytes,
-) -> bytes:
-    """검증을 통과한 요청을 ``GET /scan``과 같은 결제 로직으로 처리한다."""
-    key = bytes.fromhex(restaurant.scanner_key_hash or "")
+    key: bytes,
+    *,
+    key_is_current: bool,
+) -> tuple[bytes, bool]:
+    """검증을 통과한 요청을 ``GET /scan``과 같은 결제 로직으로 처리한다.
+
+    같은 (식당, 근로자)에 최근 내린 결정이 있으면 결제하지 않고 그 결정을 재사용한다.
+    응답은 언제나 **이번 요청의 nonce**로 다시 서명한다(리더가 nonce 일치를 요구한다).
+    """
     worker = await db.scalar(select(User).where(User.user_id == worker_user_id))
     if worker is None:
-        return _relay_pack(RELAY_INVALID_QR, nonce, key)
+        return _relay_pack(RELAY_INVALID_QR, nonce, key), False
+
+    decision_key = (restaurant.id, worker_user_id)
+    decision = _relay_decision(decision_key)
+    if decision is not None:
+        return _relay_decided(decision, nonce, key), True
+
+    if key_is_current and restaurant.scanner_key_hash_prev is not None:
+        # 새 키로 결제가 성공하면 유예 키를 버린다(실패하면 롤백되어 그대로 남는다).
+        restaurant.scanner_key_hash_prev = None
     try:
         data = await _charge_wallet(
             db,
@@ -1039,23 +1105,42 @@ async def _relay_charge(
         )
     except HTTPException as exc:
         if exc.status_code == Config.HttpStatus.BAD_REQUEST:
-            return _relay_pack(RELAY_NO_PRICE, nonce, key)
-        if exc.status_code == Config.HttpStatus.CONFLICT:
-            return _relay_pack(RELAY_INSUFFICIENT, nonce, key)
-        raise
+            decision = (RELAY_NO_PRICE, 0, 0, 0, 0)
+        elif exc.status_code == Config.HttpStatus.CONFLICT:
+            decision = (RELAY_INSUFFICIENT, 0, 0, 0, 0)
+        else:
+            raise
+    else:
+        decision = (
+            RELAY_OK,
+            data.meal_price,
+            data.ticket_amount_applied,
+            data.cash_amount_required,
+            data.id,
+        )
+    _relay_remember_decision(decision_key, decision)
+    return _relay_decided(decision, nonce, key), False
+
+
+def _relay_decided(
+    decision: tuple[int, int, int, int, int], nonce: bytes, key: bytes
+) -> bytes:
+    status, meal_price, ticket_applied, cash, txid = decision
     return _relay_pack(
-        RELAY_OK,
+        status,
         nonce,
         key,
-        meal_price=data.meal_price,
-        ticket_applied=data.ticket_amount_applied,
-        cash=data.cash_amount_required,
-        txid=data.id,
+        meal_price=meal_price,
+        ticket_applied=ticket_applied,
+        cash=cash,
+        txid=txid,
     )
 
 
-async def _relay_settle(db: AsyncSession, request: Request, req: bytes) -> bytes:
-    """87바이트 요청을 검증·결제하고 서명된 62바이트 응답을 만든다."""
+async def _relay_settle(
+    db: AsyncSession, request: Request, req: bytes
+) -> tuple[bytes, bool]:
+    """87바이트 요청을 검증·결제하고 (서명된 62바이트 응답, 결정 재사용 여부)를 만든다."""
     restaurant_id = int.from_bytes(req[1:3], "little")
     nonce = req[3:11]
     restaurant = await db.scalar(
@@ -1065,16 +1150,25 @@ async def _relay_settle(db: AsyncSession, request: Request, req: bytes) -> bytes
         )
     )
     if restaurant is None or restaurant.scanner_key_hash is None:
-        return _relay_pack(RELAY_DEVICE_AUTH, nonce, None)  # K를 모르니 서명도 못 한다
-    key = bytes.fromhex(restaurant.scanner_key_hash)
-    if not hmac.compare_digest(
-        req[55:], hmac.new(key, req[:55], hashlib.sha256).digest()
-    ):
-        return _relay_pack(RELAY_DEVICE_AUTH, nonce, key)
+        # K를 모르니 서명도 못 한다.
+        return _relay_pack(RELAY_DEVICE_AUTH, nonce, None), False
+    key, key_is_current = _relay_matching_key(restaurant, req)
+    if key is None:
+        # mac이 틀렸다. 응답은 현재 키로 서명한다.
+        current = bytes.fromhex(restaurant.scanner_key_hash)
+        return _relay_pack(RELAY_DEVICE_AUTH, nonce, current), False
     worker_user_id, status = _read_ticket_token(req[19:55])
     if worker_user_id is None:
-        return _relay_pack(status, nonce, key)
-    return await _relay_charge(db, request, restaurant, worker_user_id, nonce)
+        return _relay_pack(status, nonce, key), False
+    return await _relay_charge(
+        db,
+        request,
+        restaurant,
+        worker_user_id,
+        nonce,
+        key,
+        key_is_current=key_is_current,
+    )
 
 
 @router.post(
@@ -1089,8 +1183,10 @@ async def relay_scan(
 ) -> JSONResponse:
     """폰이 중계한 리더 서명 요청을 검증·결제하고, 서명된 응답을 돌려준다.
 
-    인증 헤더는 없다. 요청 본문 자체가 식당 스캐너 키로 서명돼 있고, 거절도 200으로
-    (서명된 status와 함께) 나간다. 400은 길이·버전·base64 오류뿐이다.
+    인증 헤더는 없다(``X-Scanner-Key``도 받지 않는다). 요청 본문 자체가 식당 스캐너 키로
+    서명돼 있고, 거절도 200으로 (서명된 status와 함께) 나간다. 400은 길이·버전·base64
+    오류뿐이다. 요청 제한이 아니라 청구 제한이다 — 몇 번을 물어도 답은 주되, 같은
+    (식당, 근로자)는 ``RELAY_DECISION_TTL_SECONDS`` 안에 한 번만 청구된다.
     """
     started = time.monotonic()
     try:
@@ -1114,6 +1210,12 @@ async def relay_scan(
     digest = hashlib.sha256(req).digest()
     cached = _relay_cached(digest)
     if cached is not None:
+        logger.info(
+            "relay rid=%d nonce=%s status=%d RESENT",
+            int.from_bytes(req[1:3], "little"),
+            req[3:11].hex(),
+            cached[1],
+        )
         return JSONResponse({"resp": _b64url(cached)})
     if _relay_rate_limited(_relay_client_key(request)):
         return JSONResponse(
@@ -1121,14 +1223,15 @@ async def relay_scan(
             status_code=Config.HttpStatus.TOO_MANY_REQUESTS,
         )
 
-    response = await _relay_settle(db, request, req)
+    response, reused = await _relay_settle(db, request, req)
     _relay_remember(digest, response)
     logger.info(
-        "relay rid=%d sid=%s nonce=%s status=%d %dms",
+        "relay rid=%d sid=%s nonce=%s status=%d%s %dms",
         int.from_bytes(req[1:3], "little"),
         req[11:19].hex(),
         req[3:11].hex(),
         response[1],
+        " REUSED" if reused else "",
         int((time.monotonic() - started) * 1000),
     )
     return JSONResponse({"resp": _b64url(response)})

@@ -340,6 +340,36 @@ label {
   top: 18px;
 }
 
+.data-table {
+  width: 100%;
+  margin-top: 12px;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.data-table th,
+.data-table td {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+}
+
+.muted {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.reader-qr-code {
+  display: flex;
+  justify-content: center;
+  margin: 12px 0;
+}
+
+.reader-qr-payload {
+  min-height: 0;
+  max-height: 160px;
+}
+
 .request-line {
   min-height: 34px;
   margin-bottom: 12px;

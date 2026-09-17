@@ -14,7 +14,11 @@ from fastapi import FastAPI
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from sqlalchemy import select
+
 from app.config import Config
+from app.models.restaurants import Restaurant
+from app.models.worker import MealTicket
 from app.routers import worker as worker_router
 from tests.test_worker_tickets import (
     override_current_user,
@@ -40,8 +44,10 @@ def make_tok(secret: bytes, worker_uuid: str, expires_at: int) -> bytes:
     return body + hmac.new(secret, b"\x01" + body, hashlib.sha256).digest()[:16]
 
 
-def make_req(key: bytes, tok: bytes, *, rid: int = 1, nonce: bytes = NONCE) -> bytes:
-    head = struct.pack("<BH", 1, rid) + nonce + SID + tok
+def make_req(
+    key: bytes, tok: bytes, *, rid: int = 1, nonce: bytes = NONCE, sid: bytes = SID
+) -> bytes:
+    head = struct.pack("<BH", 1, rid) + nonce + sid + tok
     return head + hmac.new(key, head, hashlib.sha256).digest()
 
 
@@ -52,6 +58,7 @@ def fixed_secret(monkeypatch: pytest.MonkeyPatch) -> bytes:
     monkeypatch.setattr(Config, "RELAY_TOKEN_SECRET", secret)
     worker_router._relay_replies.clear()
     worker_router._relay_hits.clear()
+    worker_router._relay_decisions.clear()
     return secret
 
 
@@ -230,3 +237,178 @@ async def test_worker_qr_returns_signed_token_for_uuid_subs(
         WORKER_UUID,
         worker_router.RELAY_OK,
     )
+
+
+def relay_payment(  # noqa: PLR0913
+    async_client: AsyncClient,
+    secret: bytes,
+    key: bytes,
+    *,
+    rid: int,
+    nonce: bytes,
+    sid: bytes = SID,
+    ttl: int = 60,
+):
+    """리더가 새로 만든 요청 하나를 중계한다(매번 새 tok·sid·nonce)."""
+    tok = make_tok(secret, WORKER_UUID, int(time.time()) + ttl)
+    req = make_req(key, tok, rid=rid, nonce=nonce, sid=sid)
+    return async_client.post("/relay", json={"req": b64url(req)})
+
+
+def decode_resp(response) -> tuple[int, int, int, int, int, bytes]:
+    """62바이트 응답을 (status, price, applied, cash, txid, nonce)로 푼다."""
+    resp = b64url_decode(response.json()["resp"])
+    price, applied, cash = struct.unpack("<III", resp[10:22])
+    (txid,) = struct.unpack("<Q", resp[22:30])
+    return resp[1], price, applied, cash, txid, resp[2:10]
+
+
+async def test_rescan_with_new_tok_and_nonce_charges_once(
+    async_client: AsyncClient,
+    db_session: AsyncSession,
+    test_app: FastAPI,
+    fixed_secret: bytes,
+) -> None:
+    """QR을 다시 찍어 87바이트가 통째로 달라져도 한 끼는 한 번만 청구된다."""
+    restaurant_id, key = await seed_relay_restaurant(async_client, db_session, test_app)
+
+    first = await relay_payment(
+        async_client, fixed_secret, key, rid=restaurant_id, nonce=b"\xa1" * 8
+    )
+    # 사장님이 CHECK PHONE을 보고 다시 찍는다: 새 tok·새 sid·새 nonce
+    second = await relay_payment(
+        async_client,
+        fixed_secret,
+        key,
+        rid=restaurant_id,
+        nonce=b"\xb2" * 8,
+        sid=b"\xcc" * 8,
+        ttl=61,
+    )
+
+    first_status, first_price, first_applied, _, first_txid, first_nonce = decode_resp(
+        first
+    )
+    status, price, applied, cash, txid, nonce = decode_resp(second)
+    assert (first_status, first_price, first_applied) == (
+        worker_router.RELAY_OK,
+        7000,
+        7000,
+    )
+    # 같은 결정을 재사용하되 이번 요청의 nonce로 다시 서명한다.
+    assert (status, price, applied, cash, txid) == (
+        worker_router.RELAY_OK,
+        7000,
+        7000,
+        0,
+        first_txid,
+    )
+    assert first_nonce == b"\xa1" * 8
+    assert nonce == b"\xb2" * 8
+    second_resp = b64url_decode(second.json()["resp"])
+    assert hmac.compare_digest(
+        second_resp[30:], hmac.new(key, second_resp[:30], hashlib.sha256).digest()
+    )
+
+    # 지갑은 한 번만 줄어야 한다.
+    history = await async_client.get(
+        f"/restaurants/{restaurant_id}/ticket-usage-requests"
+    )
+    assert [h["meal_price"] for h in history.json()["data"]] == [7000]
+    bucket = await db_session.scalar(select(MealTicket))
+    assert bucket is not None and bucket.remaining_amount == 3000
+
+
+async def test_second_meal_after_decision_window_is_charged(
+    async_client: AsyncClient,
+    db_session: AsyncSession,
+    test_app: FastAPI,
+    fixed_secret: bytes,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """창이 지나면 다시 정상 결제된다."""
+    restaurant_id, key = await seed_relay_restaurant(async_client, db_session, test_app)
+    await seed_bucket(db_session, 1, 20000, "2099-12-31")  # 두 끼 값
+
+    first = await relay_payment(
+        async_client, fixed_secret, key, rid=restaurant_id, nonce=b"\xa1" * 8
+    )
+    monkeypatch.setattr(Config, "RELAY_DECISION_TTL_SECONDS", 0)
+    second = await relay_payment(
+        async_client, fixed_secret, key, rid=restaurant_id, nonce=b"\xb2" * 8
+    )
+
+    _, _, _, _, first_txid, _ = decode_resp(first)
+    status, price, applied, _, txid, _ = decode_resp(second)
+    assert (status, price, applied) == (worker_router.RELAY_OK, 7000, 7000)
+    assert txid != first_txid
+    history = await async_client.get(
+        f"/restaurants/{restaurant_id}/ticket-usage-requests"
+    )
+    assert [h["meal_price"] for h in history.json()["data"]] == [7000, 7000]
+
+
+async def test_rotated_scanner_key_keeps_old_key_until_new_key_pays(
+    async_client: AsyncClient,
+    db_session: AsyncSession,
+    test_app: FastAPI,
+    fixed_secret: bytes,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """키 교체 중에도 옛 키가 통하고, 새 키로 한 번 결제되면 옛 키는 버려진다."""
+    monkeypatch.setattr(Config, "RELAY_DECISION_TTL_SECONDS", 0)
+    restaurant_id, old_key = await seed_relay_restaurant(
+        async_client, db_session, test_app
+    )
+    await seed_bucket(db_session, 1, 20000, "2099-12-31")
+
+    rotated = await async_client.post(f"/restaurants/{restaurant_id}/scanner-key")
+    assert rotated.status_code == 201, rotated.text
+    new_key = hashlib.sha256(
+        rotated.json()["data"]["scanner_key"].encode("utf-8")
+    ).digest()
+
+    with_old = await relay_payment(
+        async_client, fixed_secret, old_key, rid=restaurant_id, nonce=b"\x01" * 8
+    )
+    with_new = await relay_payment(
+        async_client, fixed_secret, new_key, rid=restaurant_id, nonce=b"\x02" * 8
+    )
+    old_again = await relay_payment(
+        async_client, fixed_secret, old_key, rid=restaurant_id, nonce=b"\x03" * 8
+    )
+
+    # 옛 키 요청은 옛 키로 서명해 돌려준다(리더가 아직 옛 키만 안다).
+    old_resp = b64url_decode(with_old.json()["resp"])
+    assert old_resp[1] == worker_router.RELAY_OK
+    assert hmac.compare_digest(
+        old_resp[30:], hmac.new(old_key, old_resp[:30], hashlib.sha256).digest()
+    )
+    assert decode_resp(with_new)[0] == worker_router.RELAY_OK
+    # 새 키로 결제가 성공했으니 유예는 끝났다.
+    assert decode_resp(old_again)[0] == worker_router.RELAY_DEVICE_AUTH
+    restaurant = await db_session.get(Restaurant, restaurant_id)
+    assert restaurant is not None
+    await db_session.refresh(restaurant)
+    assert restaurant.scanner_key_hash_prev is None
+
+
+async def test_relay_ignores_scanner_key_header(
+    async_client: AsyncClient,
+    db_session: AsyncSession,
+    test_app: FastAPI,
+    fixed_secret: bytes,
+) -> None:
+    """리더가 더는 키를 헤더로 보내지 않는다. 헤더가 있든 없든 동작은 같다."""
+    restaurant_id, key = await seed_relay_restaurant(async_client, db_session, test_app)
+    tok = make_tok(fixed_secret, WORKER_UUID, int(time.time()) + 60)
+    req = make_req(key, tok, rid=restaurant_id, nonce=b"\x77" * 8)
+
+    response = await async_client.post(
+        "/relay",
+        json={"req": b64url(req)},
+        headers={"X-Scanner-Key": "stale-header-value"},
+    )
+
+    assert response.status_code == 200, response.text
+    assert decode_resp(response)[0] == worker_router.RELAY_OK

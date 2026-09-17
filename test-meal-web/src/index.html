@@ -365,6 +365,51 @@
                 <div class="button-row">
                   <button data-action="getRestaurantRevenue" type="button">오늘 매출</button>
                   <button data-action="issueRestaurantScannerKey" type="button">스캐너 키 발급(교체)</button>
+                  <button data-action="todayRestaurantApprovals" type="button">오늘 승인 목록</button>
+                </div>
+                <div id="todayApprovalsTable"></div>
+              </section>
+
+              <section class="panel">
+                <div class="panel-heading">
+                  <h3>리더 관리</h3>
+                  <button data-action="listReaders" type="button">리더 목록</button>
+                </div>
+                <div class="form-grid wide">
+                  <label>리더 BT MAC <input id="readerBtMac" placeholder="AA:BB:CC:DD:EE:FF" /></label>
+                  <label>라벨 <input id="readerLabel" placeholder="예: 카운터 리더" /></label>
+                </div>
+                <div class="button-row">
+                  <button data-action="registerReader" type="button">리더 등록</button>
+                  <button class="danger-button" data-action="deleteReader" type="button">리더 삭제</button>
+                </div>
+              </section>
+
+              <section class="panel">
+                <div class="panel-heading">
+                  <h3>리더 설정 QR 발급</h3>
+                  <button data-action="issueReaderConfigQr" type="button">QR 발급</button>
+                </div>
+                <div class="form-grid wide">
+                  <label>대상 리더 BT MAC <input id="readerConfigBtMac" placeholder="AA:BB:CC:DD:EE:FF" /></label>
+                  <label>SSID <input id="readerSsid" placeholder="비워두면 미포함" /></label>
+                  <label>비밀번호 <input id="readerPassword" type="password" placeholder="비워두면 미포함" /></label>
+                  <label>모드
+                    <select id="readerMode">
+                      <option value="">없음</option>
+                      <option value="auto">auto</option>
+                      <option value="ble">ble</option>
+                    </select>
+                  </label>
+                  <label>RID <input id="readerRid" type="number" placeholder="비워두면 미포함" /></label>
+                  <label>t_adv (ms) <input id="readerTAdv" type="number" min="1000" max="20000" placeholder="1000~20000" /></label>
+                  <label>t_req (ms) <input id="readerTReq" type="number" min="1000" max="20000" placeholder="1000~20000" /></label>
+                  <label>t_rsp (ms) <input id="readerTRsp" type="number" min="1000" max="20000" placeholder="1000~20000" /></label>
+                </div>
+                <div class="reader-qr-result">
+                  <div id="readerQrCode" class="reader-qr-code"></div>
+                  <div class="request-line" id="readerQrCtr">ctr: -</div>
+                  <pre id="readerQrPayload" class="reader-qr-payload"></pre>
                 </div>
               </section>
 
@@ -483,6 +528,7 @@
         </section>
       </main>
     </div>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
     <script src="/test-web/app.js"></script>
   </body>
 </html>

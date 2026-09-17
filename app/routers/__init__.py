@@ -9,6 +9,7 @@ utils.py에는 API 서버에서 사용하는 유틸리티 함수들이 정의되
 from .images import router as images_router
 from .meals import router as meals_router
 from .pricing import router as pricing_router
+from .readers import router as readers_router
 from .restaurants import admin_router as admin_restaurants_router
 from .restaurants import router as restaurants_router
 from .users import router as users_router
@@ -19,6 +20,7 @@ __all__ = [
     "images_router",
     "meals_router",
     "pricing_router",
+    "readers_router",
     "restaurants_router",
     "users_router",
     "worker_router",

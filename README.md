@@ -64,12 +64,13 @@ docker compose down
 - `JWT_CLIENT_ID`: role claim을 확인할 backend client ID, 기본 `mymoo-meal-service`
 - `TIMEZONE`: 기본 `Asia/Seoul`
 - `DATABASE_URL`: 명시 시 `POSTGRES_*`보다 우선
+- `RELAY_DECISION_TTL_SECONDS`: 기본 90. 같은 (식당, 근로자) 결제 결정을 재사용하는 창(초) — 재스캔 이중 결제 차단
 - `RELAY_TOKEN_SECRET`: BLE 식권 토큰 서명 키(32바이트 hex). 비우면 프로세스마다 임시 키를 만들어 재시작 시 토큰이 무효가 된다
 
 ## 관련 문서
 
 - [QR 스캐너 기기 연동 규칙](docs/qr-scanner.md) — 근로자 QR URL 형식, 기기 고정 헤더, 스캐너 키 발급, 응답 코드
-- [BLE 중계 검증 (POST /relay)](docs/ble-relay.md) — 리더 서명 요청 87B/응답 62B 포맷, 식권 토큰, status 코드
+- [BLE 중계 검증 (POST /relay)](docs/ble-relay.md) — 리더 서명 요청 87B/응답 62B 포맷, 식권 토큰, status 코드, 재스캔 이중 결제 차단, 설정 QR(SKC1), 키 교체 유예
 - [실시간 이벤트 (SSE)](docs/sse-events.md) — `GET /worker/events`, `GET /restaurants/{id}/events`, 이벤트 종류와 페이로드
 
 ## 운영 메모

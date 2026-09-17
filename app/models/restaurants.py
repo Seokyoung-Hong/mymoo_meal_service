@@ -85,6 +85,11 @@ class Restaurant(Base):
     scanner_key_hash: Mapped[Optional[str]] = mapped_column(
         String(64), nullable=True, unique=True
     )
+    # 교체 직전 키의 sha256. 기기에 새 키를 심기 전까지 옛 키도 결제를 통과시킨다.
+    # 새 키로 결제가 한 번 성공하면 버린다.
+    scanner_key_hash_prev: Mapped[Optional[str]] = mapped_column(
+        String(64), nullable=True
+    )
 
     building_name: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     naver_map_link: Mapped[Optional[str]] = mapped_column(Text, nullable=True)

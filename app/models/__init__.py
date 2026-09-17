@@ -4,6 +4,7 @@ from app.models.meals import NonEscapedJSON, MealType, Meal
 from app.models.images import StoredImage
 from app.models.audit import AuditLog
 from app.models.pricing import RestaurantPricingPolicy
+from app.models.readers import RestaurantReader
 from app.models.worker import (
     CashTransaction,
     CashWallet,
@@ -26,6 +27,7 @@ __all__ = [
     "StoredImage",
     "AuditLog",
     "RestaurantPricingPolicy",
+    "RestaurantReader",
     "CashTransaction",
     "CashWallet",
     "MealTicket",

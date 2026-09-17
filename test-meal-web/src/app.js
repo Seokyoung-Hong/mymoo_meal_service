@@ -453,6 +453,10 @@ function today() {
   return new Date().toISOString().slice(0, 10);
 }
 
+function todayKst() {
+  return new Date().toLocaleDateString("sv-SE", { timeZone: "Asia/Seoul" });
+}
+
 function restaurantPayload(prefix) {
   const price = $(`${prefix}Price`).value;
   const ownerInput = $(`${prefix}OwnerUserId`);
@@ -576,6 +580,66 @@ function ticketScanPayload() {
     payload.meal_price = Number(mealPrice);
   }
   return payload;
+}
+
+function readerRegisterPayload() {
+  const payload = { bt_mac: $("readerBtMac").value.trim() };
+  const label = $("readerLabel").value.trim();
+  if (label) {
+    payload.label = label;
+  }
+  return payload;
+}
+
+function readerConfigQrPayload() {
+  const payload = {};
+  const ssid = $("readerSsid").value.trim();
+  const password = $("readerPassword").value;
+  const mode = $("readerMode").value;
+  const rid = $("readerRid").value;
+  const tAdv = $("readerTAdv").value;
+  const tReq = $("readerTReq").value;
+  const tRsp = $("readerTRsp").value;
+  if (ssid) payload.ssid = ssid;
+  if (password) payload.password = password;
+  if (mode) payload.mode = mode;
+  if (rid) payload.rid = Number(rid);
+  if (tAdv) payload.t_adv = Number(tAdv);
+  if (tReq) payload.t_req = Number(tReq);
+  if (tRsp) payload.t_rsp = Number(tRsp);
+  return payload;
+}
+
+function renderReaderConfigQr(data) {
+  const target = $("readerQrCode");
+  target.innerHTML = "";
+  if (data && data.qr) {
+    // eslint-disable-next-line no-undef -- loaded via CDN script tag in index.html
+    new QRCode(target, { text: data.qr, width: 256, height: 256 });
+  }
+  $("readerQrCtr").textContent = `ctr: ${data && data.ctr !== undefined ? data.ctr : "-"}`;
+  $("readerQrPayload").textContent = (data && data.payload) || "";
+}
+
+function renderTodayApprovalsTable(rows) {
+  const container = $("todayApprovalsTable");
+  if (!rows.length) {
+    container.innerHTML = '<p class="muted">오늘 승인 내역이 없습니다.</p>';
+    return;
+  }
+  const body = rows
+    .map((row) => {
+      const time = row.requested_at
+        ? new Date(row.requested_at).toLocaleTimeString("ko-KR", {
+            timeZone: "Asia/Seoul",
+            hour: "2-digit",
+            minute: "2-digit",
+          })
+        : "-";
+      return `<tr><td>${time}</td><td>${row.status}</td><td>${row.meal_price}</td><td>${row.ticket_amount_applied}</td><td>${row.cash_amount_required}</td></tr>`;
+    })
+    .join("");
+  container.innerHTML = `<table class="data-table"><thead><tr><th>시각</th><th>상태</th><th>정찬가</th><th>티켓적용액</th><th>현금필요액</th></tr></thead><tbody>${body}</tbody></table>`;
 }
 
 const actions = {
@@ -804,6 +868,54 @@ const actions = {
       "POST",
       `/restaurants/${requireNumber("ownerRestaurantId", "restaurant ID")}/scanner-key`,
     ),
+  todayRestaurantApprovals: () =>
+    callApi(
+      "GET",
+      `/restaurants/${requireNumber("ownerRestaurantId", "restaurant ID")}/ticket-usage-requests`,
+    ).then((result) => {
+      const rows = (result && Array.isArray(result.data) ? result.data : []).filter(
+        (row) => (row.requested_at || "").slice(0, 10) === todayKst(),
+      );
+      renderTodayApprovalsTable(rows);
+      return result;
+    }),
+  listReaders: () =>
+    callApi("GET", `/restaurants/${requireNumber("ownerRestaurantId", "식당 ID")}/readers`),
+  registerReader: () => {
+    const payload = readerRegisterPayload();
+    if (!payload.bt_mac) {
+      throw new Error("리더 BT MAC을 입력하세요.");
+    }
+    return callApi(
+      "POST",
+      `/restaurants/${requireNumber("ownerRestaurantId", "식당 ID")}/readers`,
+      { body: payload },
+    );
+  },
+  deleteReader: () => {
+    const mac = $("readerBtMac").value.trim();
+    if (!mac) {
+      throw new Error("리더 BT MAC을 입력하세요.");
+    }
+    return callApi(
+      "DELETE",
+      `/restaurants/${requireNumber("ownerRestaurantId", "식당 ID")}/readers/${encodeURIComponent(mac)}`,
+    );
+  },
+  issueReaderConfigQr: () => {
+    const mac = $("readerConfigBtMac").value.trim();
+    if (!mac) {
+      throw new Error("설정 QR을 발급할 리더 BT MAC을 입력하세요.");
+    }
+    return callApi(
+      "POST",
+      `/restaurants/${requireNumber("ownerRestaurantId", "식당 ID")}/readers/${encodeURIComponent(mac)}/config-qr`,
+      { body: readerConfigQrPayload() },
+    ).then((result) => {
+      renderReaderConfigQr(result && result.data);
+      return result;
+    });
+  },
   approveRequest: () =>
     callApi(
       "POST",

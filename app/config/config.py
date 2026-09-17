@@ -129,6 +129,9 @@ class Config:
     PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "").rstrip("/")
     # BLE 중계(POST /relay)에서 쓰는 식권 토큰 서명 키. 서버만 안다.
     RELAY_TOKEN_SECRET = relay_token_secret()
+    # 같은 (식당, 근로자) 결제 결정을 재사용하는 창(초). 리더가 결과를 못 받아 QR을 다시
+    # 찍어도 한 번만 청구된다. 짧게 하면 오탐(연속 두 끼)이 줄고 이중 결제 위험이 는다.
+    RELAY_DECISION_TTL_SECONDS = int(os.getenv("RELAY_DECISION_TTL_SECONDS", "90"))
     TZ = timezone(TIMEZONE)
     CORS_ALLOW_ORIGINS = comma_separated_env(
         "CORS_ALLOW_ORIGINS",

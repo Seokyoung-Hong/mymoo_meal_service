@@ -12,6 +12,7 @@ from app.routers import (
     images_router,
     meals_router,
     pricing_router,
+    readers_router,
     restaurants_router,
     users_router,
     worker_router,
@@ -73,6 +74,7 @@ add_request_id_middleware(app)
 # 라우터 추가
 app.include_router(meals_router)
 app.include_router(pricing_router)
+app.include_router(readers_router)
 app.include_router(restaurants_router)
 app.include_router(admin_restaurants_router)
 app.include_router(users_router)
