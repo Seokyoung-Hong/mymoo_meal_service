@@ -1008,6 +1008,8 @@ RELAY_INSUFFICIENT = 2
 RELAY_NO_PRICE = 3
 RELAY_DEVICE_AUTH = 4
 RELAY_QR_EXPIRED = 5
+# 같은 (식당, 근로자)가 결정 창 안에 이미 승인됐다. 결제는 없고 리더는 DUPLICATE를 띄운다.
+RELAY_DUPLICATE = 6
 
 # ponytail: 재전송 캐시도 레이트 리밋도 프로세스 안 dict이다. uvicorn 워커 1개 전제로,
 # app/utils/events.py의 SSE 큐와 같은 가정이다. 워커를 늘리면 Redis로 옮긴다.
@@ -1194,6 +1196,10 @@ async def _relay_decide(  # noqa: PLR0913
     decision_key = (restaurant.id, worker_user_id)
     decision = _relay_decision(decision_key)
     if decision is not None:
+        # 재스캔한 새 요청이다. 이미 승인됐으면 OK가 아니라 DUPLICATE로 알린다(금액·txid는
+        # 첫 결제 것을 그대로 실어 리더·로그에서 대조할 수 있게 한다). 거절 결정은 그대로 준다.
+        if decision[0] == RELAY_OK:
+            decision = (RELAY_DUPLICATE, *decision[1:])
         return decision, True
 
     if retire_prev_key and restaurant.scanner_key_hash_prev is not None:

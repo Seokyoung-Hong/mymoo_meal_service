@@ -295,9 +295,9 @@ async def test_rescan_with_new_tok_and_nonce_charges_once(
         7000,
         7000,
     )
-    # 같은 결정을 재사용하되 이번 요청의 nonce로 다시 서명한다.
+    # 같은 결정을 재사용하되 DUPLICATE로 알리고, 이번 요청의 nonce로 다시 서명한다.
     assert (status, price, applied, cash, txid) == (
-        worker_router.RELAY_OK,
+        worker_router.RELAY_DUPLICATE,
         7000,
         7000,
         0,

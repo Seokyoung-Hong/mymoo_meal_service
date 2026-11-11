@@ -107,6 +107,7 @@ resp        = n_rsp ‖ ChaCha20-Poly1305(k_rsp, nonce=n_rsp, aad=0x02, signed) 
 | 3 | 가격 정책 없음 | NO PRICE |
 | 4 | 리더 미등록·공개키 없음·리더 서명 불일치·식당 비활성 | DEV AUTH |
 | 5 | QR 만료 | EXPIRED |
+| 6 | 이미 결제됨: 같은 (식당, 근로자)가 90초 안에 승인됨. 결제 없음, 금액·txid는 첫 결제 것 | DUPLICATE |
 
 - 거절도 200. 400은 base64·길이·ver/kid·eph_pub 오류(저차 점)·**복호화 실패(폰이 바꿈)** 뿐이다. 429는 IP당 초당 5회 초과.
 - ticket_id·qn은 요청 QR의 바이트를 그대로 돌려준다. 승인이 아니면 금액·txid는 0.
@@ -118,6 +119,7 @@ resp        = n_rsp ‖ ChaCha20-Poly1305(k_rsp, nonce=n_rsp, aad=0x02, signed) 
 
 - 1단: 요청 바이트 전체가 같으면 300초 안에는 저장된 응답을 그대로 준다.
 - 2단: `(식당, 근로자)`로 `RELAY_DECISION_TTL_SECONDS`(90초) 안의 결정을 재사용한다. 재스캔해도 한 번만 청구.
+  첫 결정이 승인이었으면 status 6(DUPLICATE)으로 알린다. 거절 결정은 그대로 준다.
   v1·v2가 같은 표를 쓰므로 두 버전을 섞어 찍어도 한 번만 청구된다.
 
 ## 6. 오프라인 검증 모드 (RTC)

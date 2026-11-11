@@ -214,6 +214,7 @@ async def test_v2_charges_once_binds_reader_and_ticket(
     assert first["price"] == 7000 and first["txid"] > 0
     assert abs(first["server_time"] - time.time()) < 5
     assert fields(again)["txid"] == first["txid"]
+    assert fields(again)["status"] == worker_router.RELAY_DUPLICATE
 
     prices = (
         (await db_session.execute(select(MealTicketUsageRequest.meal_price)))
