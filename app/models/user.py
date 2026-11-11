@@ -42,6 +42,8 @@ class User(Base):
         default=lambda: datetime.now(timezone.utc),  # 앱 레벨
         server_default=func.now(),  # DB 레벨
     )
+    # 오프라인 토큰(SK2O)에 묶는 근로자 폰의 Ed25519 공개키(hex 64자). docs/ble-relay-v2.md §6-2.
+    device_pubkey: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     owned_restaurants: Mapped[List["Restaurant"]] = relationship(
         "Restaurant", back_populates="owner_user"

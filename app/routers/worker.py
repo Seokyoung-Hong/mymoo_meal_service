@@ -59,6 +59,7 @@ from app.schemas.worker import (
     CashTransactionResponse,
     MealAllowanceCreate,
     MealTicketResponse,
+    DeviceKeyCreate,
     MockCardChargeCreate,
     OfflineTokensResponse,
     RelayKeysResponse,
@@ -429,6 +430,11 @@ async def get_worker_offline_tokens(
             status_code=Config.HttpStatus.BAD_REQUEST,
             detail="UUID가 아닌 레거시 계정은 오프라인 토큰을 받을 수 없습니다.",
         ) from exc
+    if current_user.device_pubkey is None:
+        raise HTTPException(
+            status_code=Config.HttpStatus.CONFLICT,
+            detail="기기 키가 등록되지 않았습니다. POST /worker/device-key 먼저.",
+        )
     now = int(time.time())
     ttl = Config.OFFLINE_TOKEN_TTL_SECONDS
     return BaseSchema[OfflineTokensResponse](
@@ -440,10 +446,50 @@ async def get_worker_offline_tokens(
                 now,
                 ttl,
                 Config.OFFLINE_TOKENS_PER_WINDOW,
+                bytes.fromhex(current_user.device_pubkey),
             ),
             exp=now - now % ttl + ttl,
         )
     )
+
+
+@router.post(
+    "/worker/device-key",
+    status_code=Config.HttpStatus.NO_CONTENT,
+    response_model=None,
+)
+async def register_worker_device_key(
+    payload: DeviceKeyCreate,
+    request: Request,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_user)],
+) -> None:
+    """Register (or replace) the phone key that offline tokens are bound to.
+
+    교체하면 이전 키로 받은 토큰은 리더의 기기 서명 확인을 통과하지 못한다(폰 분실 시 교체).
+    """
+    pubkey = payload.pubkey.lower()
+    if pubkey == current_user.device_pubkey:
+        return
+    previous = current_user.device_pubkey
+    current_user.device_pubkey = pubkey
+    try:
+        _ = add_audit_log(
+            db,
+            AuditLogEntry(
+                request_id=request_id_from_request(request),
+                actor_user_id=current_user.user_id,
+                action="worker.device_key.set",
+                resource_type="User",
+                resource_id=current_user.id,
+                before={"device_pubkey": previous},
+                after={"device_pubkey": pubkey},
+            ),
+        )
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        raise
 
 
 # ---------------------------------------------------------------------------

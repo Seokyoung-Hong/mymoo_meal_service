@@ -61,6 +61,12 @@ class WorkerQrResponse(BaseModel):
     ttl: int
 
 
+class DeviceKeyCreate(BaseModel):
+    """근로자 폰의 Ed25519 공개키(32바이트 hex). 오프라인 토큰에 묶인다."""
+
+    pubkey: str = Field(pattern=r"^[0-9a-fA-F]{64}$")
+
+
 class OfflineTokensResponse(BaseModel):
     """오프라인 전용 1회용 토큰(``SK2O.<b64url>``)과 만료 시각(unix 초, 모든 토큰 공통)."""
 

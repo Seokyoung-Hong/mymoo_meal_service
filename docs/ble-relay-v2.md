@@ -17,7 +17,7 @@ v1(docs/ble-relay.md)은 기존 리더용으로 계속 동작한다. 같은 `POS
 | ⑦ 폰이 내용 열람·변조 불가하게 중계 | eph X25519 + ChaCha20-Poly1305로 암호화. 폰은 못 읽고, 바꾸면 복호화 실패 |
 | ⑧⑨ 서버가 유효성·중복사용 검증, 서명된 응답 | QR 서명·만료, 2단 멱등, 오프라인 기록 중복·시간 검사(온라인 결제와 교차). 응답에 서버 Ed25519 서명 |
 | ⑩⑪ 리더가 서버 공개키로 직접 검증, nonce·거래ID·Reader ID·이용권 ID 결합 | 응답 평문에 rnonce·txid·reader_id·ticket_id·qn 포함, 서버 공개키로 서명 검증 |
-| B 종속항: 직접 경로 우선, 실패 시 오프라인 검증 | WiFi 직접 → BLE 중계 → RTC 기반 오프라인 승인(§6) |
+| B 종속항: 직접 경로 우선, 실패 시 오프라인 검증 | WiFi 직접 → BLE 중계 → RTC 기반 오프라인 승인(§6, 기기 키에 묶인 1회용 토큰) |
 
 ## 1. 알고리즘
 
@@ -122,15 +122,14 @@ resp        = n_rsp ‖ ChaCha20-Poly1305(k_rsp, nonce=n_rsp, aad=0x02, signed) 
 
 ## 6. 오프라인 검증 모드 (RTC)
 
-직접 경로와 BLE 중계가 모두 실패했을 때 리더가 하는 일:
+직접 경로와 BLE 중계가 모두 실패하면 리더는 결제하지 않고 `NO NETWORK`/`CHECK PHONE`을 띄운다.
+**오프라인 승인은 오프라인 토큰(`SK2O`, §6-1)과 기기 서명(§6-2)으로만 한다.** 온라인 QR(`SK2`)은 오프라인으로
+승인하지 않는다(기기 서명이 없어 스크린샷 하나로 여러 리더를 돌 수 있다). 망이 없으면 앱이 SK2O를 보여 준다.
 
-1. QR 서명을 sign_pub로 검증, `iat ≤ RTC ≤ exp` 확인(RTC는 서명된 server_time으로 보정된 DS3231).
-2. 로컬 중복표에 `(ticket_id, qn)`가 없으면 승인 → `OFFLINE OK`, 기록 저장(seq는 기기 단조 증가, NVS 보존).
-3. 한도(건수·금액)를 넘으면 `OFFLINE LIMIT`. 한도 값은 사업 정책으로 미정이며, 정해지면 설정 QR 필드로 추가한다.
-4. 다음 온라인 요청(직접이든 BLE든)에 오래된 것부터 seq 오름차순으로 최대 7건을 실어 보낸다.
+1. SK2O 서명·RTC 유효기간·로컬 중복표(NVS 보존)·기기 서명을 모두 통과하면 `OFFLINE OK`, 기록 저장
+   (seq는 기기 단조 증가, NVS 보존).
+2. 다음 온라인 요청(직접이든 BLE든)에 오래된 것부터 seq 오름차순으로 최대 7건을 실어 보낸다.
    응답이 검증되면 **이번에 보낸 기록 중** `seq ≤ ack_seq`인 것을 지운다(안 보낸 기록은 지우지 않는다).
-5. 온라인 결과를 받지 못한(CHECK PHONE) QR도 오프라인 승인할 수 있다. 서버가 이미 결제했으면
-   업로드 때 `duplicate`로 처리되어 두 번 청구되지 않는다.
 
 ### 6-1. 오프라인 토큰 (`SK2O`) — 폰도 오프라인일 때
 
@@ -141,17 +140,17 @@ resp        = n_rsp ‖ ChaCha20-Poly1305(k_rsp, nonce=n_rsp, aad=0x02, signed) 
 GET /worker/offline-tokens   (Bearer, 근로자)
 → {"tokens": ["SK2O.<b64url>", ...], "exp": <unix초>}
 
-body (34B) = ver(1)=2 ‖ kid(1)=1 ‖ ticket_id(16) ‖ qn(8) ‖ iat(4) ‖ exp(4)    ← SK2와 같은 배치
+body (66B) = ver(1)=2 ‖ kid(1)=1 ‖ ticket_id(16) ‖ qn(8) ‖ iat(4) ‖ exp(4) ‖ dev_pub(32)  ← SK2 배치 + 기기 공개키
 qn         = HMAC-SHA256(SECRET, 0x03 ‖ ticket_id ‖ iat)[:8]                   ← 도메인 0x03
 sig        = Ed25519(SPK, "SK2off" ‖ body)                                      ← 같은 SPK, 다른 문맥
-QR 문자열  = "SK2O." + b64url(body ‖ sig) + "." + b64url(ble_id)
+QR 문자열  = "SK2O." + b64url(body66 ‖ sig64) + "." + b64url(ble_id)       ← 130B
 ```
 
 - 창(`OFFLINE_TOKEN_TTL_SECONDS`, 기본 43200 = 12시간, UTC 기준 정렬) 단위로 **결정적**이다. 같은 창에서
   다시 받아도 같은 토큰이다. 창당 `OFFLINE_TOKENS_PER_WINDOW`(기본 2)장. 토큰 i의 `iat = 창 시작 − i`,
   `exp = 창 끝`(모두 같음). 근로자가 동시에 쥘 수 있는 토큰은 최대 4장(현재 + 직전 창)이고,
   **이 장수가 오프라인 청구 한도다.** 금액 한도는 따로 없다(서버가 정산 시 실제 가격을 청구, 잔액 부족이면 `insufficient`).
-- 폰 기기 바인딩은 하지 않는다. 대신 토큰은 1회용이라, 스크린샷을 훔쳐도 그 토큰 장수만큼만 쓸 수 있다.
+- 기기 키가 등록되지 않은 근로자는 토큰을 받지 못한다(409). 등록은 §6-2.
 - 앱: 온라인일 때 받아 두고, 망이 없으면 아직 안 쓴 토큰을 QR로 보여 준다. 쓴 토큰은 앱이 알 수 없으므로
   순서대로 보여 주고 사용자가 넘길 수 있게 한다(리더가 로컬 중복표로 같은 토큰 재사용을 거부).
 
@@ -159,13 +158,32 @@ QR 문자열  = "SK2O." + b64url(body ‖ sig) + "." + b64url(ble_id)
 
 - `SK2O`는 **연결 여부와 상관없이 언제나 오프라인 승인 경로**로 간다. 서버 `/relay`는 SK2O를 QR로 받지 않는다
   (`SK2qr` 문맥 서명이 아니므로 status 1).
-- 검사: `"SK2off"` 문맥으로 sign_pub 서명, ver·kid, RTC 기준 `iat ≤ now ≤ exp`, 로컬 중복표 `(ticket_id, qn)`.
+- 검사: `"SK2off"` 문맥으로 sign_pub 서명(body 66B), ver·kid, RTC 기준 `iat ≤ now ≤ exp`, 로컬 중복표 `(ticket_id, qn)`,
+  직전 90초 온라인 승인, 그리고 **기기 서명(§6-2)**.
 - 기록 36B는 그대로다. qn·iat 자리에 토큰의 qn·iat를 넣는다. 서버는 qn 도메인(0x02/0x03)으로 종류를 안다.
 
 서버 정산 차이: 토큰 기록은 `used_at ∈ [iat − 300, iat + ttl + 장수 + 300]`이면 유효하고, 이미 결제됐는지는
 `used_at ± 90초` 안의 같은 식당 결제로 본다(온라인 QR은 QR 유효 시간 ± 90초).
 
-서버 처리(`relay_offline_record` 테이블):
+### 6-2. 기기 키 바인딩 — 토큰 스크린샷 재사용 차단
+
+- 앱이 폰 안에서 Ed25519 키쌍을 만들고 공개키를 `POST /worker/device-key {"pubkey": "<hex64>"}`(Bearer, 204)로 등록한다.
+  근로자당 하나이며, 다시 보내면 교체된다(감사 로그 `worker.device_key.set`). 교체하면 이전 키로 받은 토큰은 쓸 수 없다.
+- 서버는 토큰 body에 dev_pub를 넣어 서명한다. 리더는 오프라인 승인 직전 기존 BLE 세션(같은 GATT)으로 도전한다.
+
+```
+dev_req  (29B) = 0x03 ‖ rnonce(16) ‖ reader_id(4) ‖ qn(8)          ← 리더가 REQ에 올림, qn은 그 토큰의 qn
+dev_resp (65B) = 0x03 ‖ Ed25519(dev_priv, "SK2dev" ‖ dev_req)       ← 폰이 RESP에 씀(서버로 보내지 않음)
+```
+
+- 앱: REQ가 29B이고 `[0] == 3`이면 서버로 중계하지 않는다. **qn이 지금 보여 준 자기 토큰의 qn과 같을 때만** 서명한다
+  (남의 리더가 임의 qn 서명을 받아 가는 오라클 방지). 그 밖의 길이(v1 87, v2 237..489)는 기존대로 중계한다.
+- 리더: 65B이고 `[0] == 3`이며 토큰 dev_pub로 서명이 맞아야 승인. 서명 불일치 `DEV KEY`, 5초 안에 응답 없음 `NO PHONE`.
+- 서버는 기기 서명을 다시 보지 않는다(기록은 리더 서명으로 신뢰). 남는 위험은 폰 자체를 가진 사람뿐이다.
+
+### 6-3. 서버 정산 (`relay_offline_record` 테이블)
+
+구형 펌웨어가 SK2 오프라인 기록을 올려도 아래 규칙으로 정산한다(0x02 도메인). 새 펌웨어는 SK2O 기록(0x03)만 올린다.
 
 - 리더 서명이 맞은 요청의 기록만 본다. `(reader_id, seq)`가 이미 있으면 건너뛴다(재업로드 안전).
 - `invalid`(청구 없음):
@@ -231,13 +249,17 @@ plain (74B)   = 0200000102030405060708090a0b0c0d0e0f010000002ab708e15dc74f54abc4
                 f0a08dd1bc1999459330123f070000000000000028230000282300000000000003d2
                 496b01000000
 오프라인 토큰: now = 1800000100, ttl 43200, 2장 → 창 1799971200..1800014400
-token[0]      = SK2O.AgEqtwjhXcdPVKvEspHwoI3RCv67pi9qZviAYUlrQApKa1cyjL6sZKdwGepySpBTG8zwFfvTYBGeMhg1kZYbdTG8NjnfoRvFWVqI8UoXDaXVaFIuLJDrXIfvQdW0B0S1FQA
+dev seed      = 4444444444444444444444444444444444444444444444444444444444444444
+dev_pub       = d759793bbc13a2819a827c76adb6fba8a49aee007f49f2d0992d99b825ad2c48
 token[0] raw  = 02012ab708e15dc74f54abc4b291f0a08dd10afebba62f6a66f88061496b400a4a6b
-                57328cbeac64a77019ea724a90531bccf015fbd360119e32183591961b7531bc3639
-                dfa11bc5595a88f14a170da5d568522e2c90eb5c87ef41d5b40744b51500
+  (130B)        d759793bbc13a2819a827c76adb6fba8a49aee007f49f2d0992d99b825ad2c480b93
+                72e4d4695e84ecb64f61a5ad78198d4c6b933bca961ceb5bbf3c48fd959ba9c5d59b
+                e22e3ce7345c66979a5a986c9cb3e052310b731741787106206c1b07
                 (qn 0afebba62f6a66f8, iat 1799971200, exp 1800014400)
-token[1]      = SK2O.AgEqtwjhXcdPVKvEspHwoI3RnCMWBR6_hlx_YUlrQApKa3J8C21YGkMivMbZme7CS1B6ww7VXf99M8O7U4Nd98QT8MbShYYxl0zihjMVDtFTs81EKfC2EhfK0fFPb_GKJw4
-                (qn 9c2316051ebf865c, iat 1799971199)
+token[0]      = SK2O.AgEqtwjhXcdPVKvEspHwoI3RCv67pi9qZviAYUlrQApKa9dZeTu8E6KBmoJ8dq22-6ikmu4Af0ny0JktmbglrSxIC5Ny5NRpXoTstk9hpa14GY1Ma5M7ypYc61u_PEj9lZupxdWb4i485zRcZpeaWphsnLPgUjELcxdBeHEGIGwbBw
+dev_req (29B) = 03000102030405060708090a0b0c0d0e0f010000000afebba62f6a66f8   (rnonce 00..0f, reader_id 1)
+dev_resp(65B) = 03dbe7fad47ae04387b13b16ff020999974ac3df6b93d83e34a0a2de6edeb2e7302b
+                6b56a3a6ce0d9c4ede2be9192a63f1740f3e7baedc388a02a0c404113bf505
 
 n_rsp         = 333333333333333333333333   (벡터용 고정값, 실제로는 난수)
 resp (166B)   = 3333333333333333333333332204a97267523e288f97d0d4f47505438740a3f8b798

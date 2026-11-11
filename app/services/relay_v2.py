@@ -54,6 +54,8 @@ CTX_QR = b"SK2qr"
 CTX_REQ = b"SK2req"
 CTX_RSP = b"SK2rsp"
 CTX_OFFLINE = b"SK2off"
+CTX_DEVICE = b"SK2dev"  # 리더 도전값에 폰이 서명할 때(서버는 쓰지 않음, 문서·테스트용)
+DEVICE_CHALLENGE = 0x03
 OFFLINE_PREFIX = "SK2O"
 HKDF_INFO = b"SK2 relay v2"
 _ZERO_NONCE = bytes(12)
@@ -179,12 +181,14 @@ def _signed_ticket(  # noqa: PLR0913
     *,
     domain: int,
     context: bytes,
+    extra: bytes = b"",
 ) -> bytes:
     body = (
         struct.pack("<BB", VERSION, KID)
         + ticket_id.bytes
         + ticket_qn(secret, ticket_id, iat, domain)
         + struct.pack("<II", iat, iat + ttl)
+        + extra
     )
     return body + keys.sign.sign(context + body)
 
@@ -206,8 +210,12 @@ def make_offline_tokens(  # noqa: PLR0913
     now: int,
     ttl: int,
     count: int,
+    device_pub: bytes,
 ) -> list[str]:
-    """오프라인 전용 1회용 토큰 ``SK2O.<b64url(body‖sig)>`` (docs/ble-relay-v2.md §6-1).
+    """오프라인 전용 1회용 토큰 ``SK2O.<b64url(body66‖sig)>`` (docs/ble-relay-v2.md §6-1·6-2).
+
+    body는 QR body 34B 뒤에 근로자 폰의 기기 공개키 32B를 붙인 66B다. 리더는 그 키로 폰에게
+    도전값 서명을 받아야 승인하므로, 토큰 스크린샷만으로는 쓸 수 없다.
 
     창(``ttl``초) 단위로 결정적이다. 같은 창에서 다시 받아도 같은 토큰이 나오므로, 근로자가 동시에
     쥘 수 있는 토큰은 현재 창과 직전 창을 합쳐 최대 ``2 × count``장이다.
@@ -225,6 +233,7 @@ def make_offline_tokens(  # noqa: PLR0913
                 ttl + index,
                 domain=QN_OFFLINE,
                 context=CTX_OFFLINE,
+                extra=device_pub,
             )
         )
         for index in range(count)

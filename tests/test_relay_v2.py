@@ -32,6 +32,7 @@ READER_KEY = Ed25519PrivateKey.from_private_bytes(bytes([0x11] * 32))
 EPH = X25519PrivateKey.from_private_bytes(bytes([0x22] * 32))
 RNONCE = bytes(range(16))
 IAT = 1800000000
+DEVICE_KEY = Ed25519PrivateKey.from_private_bytes(bytes([0x44] * 32))
 
 
 def qr_bytes(qr: str) -> bytes:
@@ -434,20 +435,37 @@ async def test_v2_low_order_eph_and_fresh_response_nonce(
 
 
 def test_offline_token_vector_and_window(fixed_secret: bytes) -> None:
-    """문서 §6-1·§8의 오프라인 토큰. 같은 창이면 같은 토큰, 온라인 QR로는 통하지 않는다."""
+    """문서 §6-1·6-2·§8의 오프라인 토큰과 기기 도전값. 같은 창이면 같은 토큰, 온라인 QR로는 무효."""
     keys = r.ServerKeys.from_secret(SECRET)
-    tokens = r.make_offline_tokens(keys, SECRET, TICKET, IAT + 100, 43200, 2)
+    device_pub = r.raw_public(DEVICE_KEY.public_key())
+    tokens = r.make_offline_tokens(
+        keys, SECRET, TICKET, IAT + 100, 43200, 2, device_pub
+    )
     first = b64url_decode(tokens[0].split(".")[1])
 
     assert tokens[0].startswith("SK2O.") and len(tokens) == 2
+    assert len(first) == 130 and first[34:66] == device_pub
     assert first.hex() == (
         "02012ab708e15dc74f54abc4b291f0a08dd10afebba62f6a66f88061496b400a4a6b"
-        "57328cbeac64a77019ea724a90531bccf015fbd360119e32183591961b7531bc3639"
-        "dfa11bc5595a88f14a170da5d568522e2c90eb5c87ef41d5b40744b51500"
+        "d759793bbc13a2819a827c76adb6fba8a49aee007f49f2d0992d99b825ad2c480b93"
+        "72e4d4695e84ecb64f61a5ad78198d4c6b933bca961ceb5bbf3c48fd959ba9c5d59b"
+        "e22e3ce7345c66979a5a986c9cb3e052310b731741787106206c1b07"
     )
-    assert tokens == r.make_offline_tokens(keys, SECRET, TICKET, IAT + 10000, 43200, 2)
-    keys.sign.public_key().verify(first[34:], r.CTX_OFFLINE + first[:34])
-    assert r.read_qr(keys, first) is None  # 온라인 경로(SK2qr 문맥)로는 무효
+    same_window = r.make_offline_tokens(
+        keys, SECRET, TICKET, IAT + 10000, 43200, 2, device_pub
+    )
+    assert tokens == same_window
+    keys.sign.public_key().verify(first[66:], r.CTX_OFFLINE + first[:66])
+    assert r.read_qr(keys, first[:34] + first[66:]) is None  # SK2qr 문맥으로는 무효
+
+    # 리더 도전값과 폰 서명(서버는 쓰지 않지만 펌웨어·앱이 같은 바이트를 내야 한다)
+    dev_req = bytes([r.DEVICE_CHALLENGE]) + RNONCE + struct.pack("<I", 1) + first[18:26]
+    dev_resp = bytes([r.DEVICE_CHALLENGE]) + DEVICE_KEY.sign(r.CTX_DEVICE + dev_req)
+    assert dev_req.hex() == "03000102030405060708090a0b0c0d0e0f010000000afebba62f6a66f8"
+    assert dev_resp.hex() == (
+        "03dbe7fad47ae04387b13b16ff020999974ac3df6b93d83e34a0a2de6edeb2e7302b"
+        "6b56a3a6ce0d9c4ede2be9192a63f1740f3e7baedc388a02a0c404113bf505"
+    )
 
 
 async def test_offline_token_charges_once(
@@ -464,7 +482,15 @@ async def test_offline_token_charges_once(
         await db_session.execute(select(User).where(User.user_id == WORKER_UUID))
     ).scalar_one()
     await override_current_user(test_app, worker)
+    before_key = await async_client.get("/worker/offline-tokens")
+    device_pub = r.raw_public(DEVICE_KEY.public_key()).hex()
+    registered = await async_client.post(
+        "/worker/device-key", json={"pubkey": device_pub}
+    )
     issued = (await async_client.get("/worker/offline-tokens")).json()["data"]
+    assert before_key.status_code == 409
+    assert registered.status_code == 204
+    assert b64url_decode(issued["tokens"][0].split(".")[1])[34:66].hex() == device_pub
     token = b64url_decode(issued["tokens"][0].split(".")[1])
     iat = struct.unpack("<I", token[26:30])[0]
     qn = token[18:26]
