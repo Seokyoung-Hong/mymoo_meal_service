@@ -132,6 +132,39 @@ resp        = n_rsp ‖ ChaCha20-Poly1305(k_rsp, nonce=n_rsp, aad=0x02, signed) 
 5. 온라인 결과를 받지 못한(CHECK PHONE) QR도 오프라인 승인할 수 있다. 서버가 이미 결제했으면
    업로드 때 `duplicate`로 처리되어 두 번 청구되지 않는다.
 
+### 6-1. 오프라인 토큰 (`SK2O`) — 폰도 오프라인일 때
+
+온라인 QR은 60초짜리라, 폰이 망을 잃으면 1분 뒤에는 보여줄 QR이 없다. 그래서 앱이 온라인일 때
+오프라인 전용 1회용 토큰을 미리 받아 둔다.
+
+```
+GET /worker/offline-tokens   (Bearer, 근로자)
+→ {"tokens": ["SK2O.<b64url>", ...], "exp": <unix초>}
+
+body (34B) = ver(1)=2 ‖ kid(1)=1 ‖ ticket_id(16) ‖ qn(8) ‖ iat(4) ‖ exp(4)    ← SK2와 같은 배치
+qn         = HMAC-SHA256(SECRET, 0x03 ‖ ticket_id ‖ iat)[:8]                   ← 도메인 0x03
+sig        = Ed25519(SPK, "SK2off" ‖ body)                                      ← 같은 SPK, 다른 문맥
+QR 문자열  = "SK2O." + b64url(body ‖ sig) + "." + b64url(ble_id)
+```
+
+- 창(`OFFLINE_TOKEN_TTL_SECONDS`, 기본 43200 = 12시간, UTC 기준 정렬) 단위로 **결정적**이다. 같은 창에서
+  다시 받아도 같은 토큰이다. 창당 `OFFLINE_TOKENS_PER_WINDOW`(기본 2)장. 토큰 i의 `iat = 창 시작 − i`,
+  `exp = 창 끝`(모두 같음). 근로자가 동시에 쥘 수 있는 토큰은 최대 4장(현재 + 직전 창)이고,
+  **이 장수가 오프라인 청구 한도다.** 금액 한도는 따로 없다(서버가 정산 시 실제 가격을 청구, 잔액 부족이면 `insufficient`).
+- 폰 기기 바인딩은 하지 않는다. 대신 토큰은 1회용이라, 스크린샷을 훔쳐도 그 토큰 장수만큼만 쓸 수 있다.
+- 앱: 온라인일 때 받아 두고, 망이 없으면 아직 안 쓴 토큰을 QR로 보여 준다. 쓴 토큰은 앱이 알 수 없으므로
+  순서대로 보여 주고 사용자가 넘길 수 있게 한다(리더가 로컬 중복표로 같은 토큰 재사용을 거부).
+
+리더 규칙:
+
+- `SK2O`는 **연결 여부와 상관없이 언제나 오프라인 승인 경로**로 간다. 서버 `/relay`는 SK2O를 QR로 받지 않는다
+  (`SK2qr` 문맥 서명이 아니므로 status 1).
+- 검사: `"SK2off"` 문맥으로 sign_pub 서명, ver·kid, RTC 기준 `iat ≤ now ≤ exp`, 로컬 중복표 `(ticket_id, qn)`.
+- 기록 36B는 그대로다. qn·iat 자리에 토큰의 qn·iat를 넣는다. 서버는 qn 도메인(0x02/0x03)으로 종류를 안다.
+
+서버 정산 차이: 토큰 기록은 `used_at ∈ [iat − 300, iat + ttl + 장수 + 300]`이면 유효하고, 이미 결제됐는지는
+`used_at ± 90초` 안의 같은 식당 결제로 본다(온라인 QR은 QR 유효 시간 ± 90초).
+
 서버 처리(`relay_offline_record` 테이블):
 
 - 리더 서명이 맞은 요청의 기록만 본다. `(reader_id, seq)`가 이미 있으면 건너뛴다(재업로드 안전).
@@ -197,6 +230,15 @@ req (273B)    = 02010faa684ed28867b97f4a6a2dee5df8ce974e76b7018e3f22a1c4cf267857
 plain (74B)   = 0200000102030405060708090a0b0c0d0e0f010000002ab708e15dc74f54abc4b291
                 f0a08dd1bc1999459330123f070000000000000028230000282300000000000003d2
                 496b01000000
+오프라인 토큰: now = 1800000100, ttl 43200, 2장 → 창 1799971200..1800014400
+token[0]      = SK2O.AgEqtwjhXcdPVKvEspHwoI3RCv67pi9qZviAYUlrQApKa1cyjL6sZKdwGepySpBTG8zwFfvTYBGeMhg1kZYbdTG8NjnfoRvFWVqI8UoXDaXVaFIuLJDrXIfvQdW0B0S1FQA
+token[0] raw  = 02012ab708e15dc74f54abc4b291f0a08dd10afebba62f6a66f88061496b400a4a6b
+                57328cbeac64a77019ea724a90531bccf015fbd360119e32183591961b7531bc3639
+                dfa11bc5595a88f14a170da5d568522e2c90eb5c87ef41d5b40744b51500
+                (qn 0afebba62f6a66f8, iat 1799971200, exp 1800014400)
+token[1]      = SK2O.AgEqtwjhXcdPVKvEspHwoI3RnCMWBR6_hlx_YUlrQApKa3J8C21YGkMivMbZme7CS1B6ww7VXf99M8O7U4Nd98QT8MbShYYxl0zihjMVDtFTs81EKfC2EhfK0fFPb_GKJw4
+                (qn 9c2316051ebf865c, iat 1799971199)
+
 n_rsp         = 333333333333333333333333   (벡터용 고정값, 실제로는 난수)
 resp (166B)   = 3333333333333333333333332204a97267523e288f97d0d4f47505438740a3f8b798
                 c6bc7ea9d750d5262cd37dd0b4f6986ba39d8c0d5de5a3488e2915f470871514fae7

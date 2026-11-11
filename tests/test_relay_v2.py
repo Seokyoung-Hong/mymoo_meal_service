@@ -15,6 +15,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.readers import RelayOfflineRecord
+from app.models.user import User
+from app.models.worker import MealTicketUsageRequest
 from app.routers import worker as worker_router
 from app.services import relay_v2 as r
 from tests.test_relay import WORKER_UUID, b64url_decode
@@ -212,10 +214,12 @@ async def test_v2_charges_once_binds_reader_and_ticket(
     assert abs(first["server_time"] - time.time()) < 5
     assert fields(again)["txid"] == first["txid"]
 
-    history = await async_client.get(
-        f"/restaurants/{restaurant_id}/ticket-usage-requests"
+    prices = (
+        (await db_session.execute(select(MealTicketUsageRequest.meal_price)))
+        .scalars()
+        .all()
     )
-    assert [h["meal_price"] for h in history.json()["data"]] == [7000]
+    assert prices == [7000]
 
 
 async def test_v2_rejects_unknown_reader_bad_signature_and_expired_qr(
@@ -308,10 +312,12 @@ async def test_v2_offline_records_settle_once_and_flag_duplicates(
         (2, "duplicate"),
         (3, "invalid"),
     ]
-    history = await async_client.get(
-        f"/restaurants/{restaurant_id}/ticket-usage-requests"
+    prices = (
+        (await db_session.execute(select(MealTicketUsageRequest.meal_price)))
+        .scalars()
+        .all()
     )
-    assert [h["meal_price"] for h in history.json()["data"]] == [7000]
+    assert prices == [7000]
 
 
 async def test_relay_keys_and_worker_qr2(
@@ -388,10 +394,12 @@ async def test_v2_offline_record_after_online_approval_is_not_charged_again(
         (2, "duplicate"),
         (3, "invalid"),
     ]
-    history = await async_client.get(
-        f"/restaurants/{restaurant_id}/ticket-usage-requests"
+    prices = (
+        (await db_session.execute(select(MealTicketUsageRequest.meal_price)))
+        .scalars()
+        .all()
     )
-    assert [h["meal_price"] for h in history.json()["data"]] == [7000]
+    assert prices == [7000]
 
 
 async def test_v2_low_order_eph_and_fresh_response_nonce(
@@ -423,3 +431,67 @@ async def test_v2_low_order_eph_and_fresh_response_nonce(
     nonce_first = b64url_decode(first.json()["resp"])[:12]
     nonce_second = b64url_decode(second.json()["resp"])[:12]
     assert nonce_first != nonce_second
+
+
+def test_offline_token_vector_and_window(fixed_secret: bytes) -> None:
+    """문서 §6-1·§8의 오프라인 토큰. 같은 창이면 같은 토큰, 온라인 QR로는 통하지 않는다."""
+    keys = r.ServerKeys.from_secret(SECRET)
+    tokens = r.make_offline_tokens(keys, SECRET, TICKET, IAT + 100, 43200, 2)
+    first = b64url_decode(tokens[0].split(".")[1])
+
+    assert tokens[0].startswith("SK2O.") and len(tokens) == 2
+    assert first.hex() == (
+        "02012ab708e15dc74f54abc4b291f0a08dd10afebba62f6a66f88061496b400a4a6b"
+        "57328cbeac64a77019ea724a90531bccf015fbd360119e32183591961b7531bc3639"
+        "dfa11bc5595a88f14a170da5d568522e2c90eb5c87ef41d5b40744b51500"
+    )
+    assert tokens == r.make_offline_tokens(keys, SECRET, TICKET, IAT + 10000, 43200, 2)
+    keys.sign.public_key().verify(first[34:], r.CTX_OFFLINE + first[:34])
+    assert r.read_qr(keys, first) is None  # 온라인 경로(SK2qr 문맥)로는 무효
+
+
+async def test_offline_token_charges_once(
+    async_client: AsyncClient,
+    db_session: AsyncSession,
+    test_app: FastAPI,
+    fixed_secret: bytes,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, reader_id = await seed_v2(async_client, db_session, test_app)
+    monkeypatch.setattr(worker_router.Config, "OFFLINE_TOKENS_PER_WINDOW", 2)
+    monkeypatch.setattr(worker_router.Config, "OFFLINE_TOKEN_TTL_SECONDS", 43200)
+    worker = (
+        await db_session.execute(select(User).where(User.user_id == WORKER_UUID))
+    ).scalar_one()
+    await override_current_user(test_app, worker)
+    issued = (await async_client.get("/worker/offline-tokens")).json()["data"]
+    token = b64url_decode(issued["tokens"][0].split(".")[1])
+    iat = struct.unpack("<I", token[26:30])[0]
+    qn = token[18:26]
+    used_at = int(time.time()) - 10
+
+    use = r.OfflineRecord(TICKET, iat, qn, used_at, 1)
+    reuse = r.OfflineRecord(TICKET, iat, qn, used_at + 3600, 2)  # 스크린샷으로 한 번 더
+    _, plain = await relay(
+        async_client,
+        reader_id,
+        fresh_qr(iat=int(time.time()) - 3600),
+        offline=(use, reuse),
+    )
+
+    assert issued["exp"] > time.time()
+    assert fields(plain)["ack"] == 2
+    rows = (
+        await db_session.execute(
+            select(RelayOfflineRecord.seq, RelayOfflineRecord.status).order_by(
+                RelayOfflineRecord.seq
+            )
+        )
+    ).all()
+    assert [tuple(row) for row in rows] == [(1, "charged"), (2, "duplicate")]
+    prices = (
+        (await db_session.execute(select(MealTicketUsageRequest.meal_price)))
+        .scalars()
+        .all()
+    )
+    assert prices == [7000]

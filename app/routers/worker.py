@@ -60,6 +60,7 @@ from app.schemas.worker import (
     MealAllowanceCreate,
     MealTicketResponse,
     MockCardChargeCreate,
+    OfflineTokensResponse,
     RelayKeysResponse,
     RelayRequest,
     RelayResponse,
@@ -408,6 +409,39 @@ async def get_worker_qr(
             tok=make_ticket_token(current_user.user_id),
             qr2=_make_qr2(current_user.user_id),
             ttl=TICKET_TOKEN_TTL_SECONDS,
+        )
+    )
+
+
+@router.get("/worker/offline-tokens")
+async def get_worker_offline_tokens(
+    current_user: Annotated[User, Depends(get_current_user)],
+) -> BaseSchema[OfflineTokensResponse]:
+    """Return one-time offline tokens the app caches for when the phone has no network.
+
+    같은 창(``OFFLINE_TOKEN_TTL_SECONDS``) 안에서는 몇 번 불러도 같은 토큰이다. 토큰은 리더가
+    오프라인으로만 승인하고, 나중에 올라온 기록에서 토큰당 한 번만 청구된다.
+    """
+    try:
+        ticket_id = UUID(current_user.user_id)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=Config.HttpStatus.BAD_REQUEST,
+            detail="UUID가 아닌 레거시 계정은 오프라인 토큰을 받을 수 없습니다.",
+        ) from exc
+    now = int(time.time())
+    ttl = Config.OFFLINE_TOKEN_TTL_SECONDS
+    return BaseSchema[OfflineTokensResponse](
+        data=OfflineTokensResponse(
+            tokens=relay_v2.make_offline_tokens(
+                _v2_keys(),
+                Config.RELAY_TOKEN_SECRET,
+                ticket_id,
+                now,
+                ttl,
+                Config.OFFLINE_TOKENS_PER_WINDOW,
+            ),
+            exp=now - now % ttl + ttl,
         )
     )
 
@@ -1402,20 +1436,34 @@ async def _offline_verdict(
 ) -> str | None:
     """청구하면 안 되는 기록의 status. 청구 대상이면 None.
 
-    - invalid: 서버가 발급한 QR이 아니거나(qn 불일치), 미등록 근로자거나, used_at이 QR 유효
+    기록은 온라인 QR(SK2) 또는 오프라인 토큰(SK2O)에서 나온다. 어느 쪽인지는 qn 도메인으로 안다.
+
+    - invalid: 서버가 발급한 QR·토큰이 아니거나(qn 불일치), 미등록 근로자거나, used_at이 유효
       시간에서 ``OFFLINE_CLOCK_SKEW_SECONDS`` 넘게 벗어났다.
-    - duplicate: 같은 QR의 오프라인 기록이 이미 있거나, 이 QR 유효 시간 앞뒤
-      ``RELAY_DECISION_TTL_SECONDS`` 안에 같은 식당에서 이미 결제됐다. 온라인 승인 뒤 응답을
-      못 받은 리더가 오프라인으로 다시 승인한 경우와, 재스캔한 새 QR이 오프라인으로 간 경우를
-      막는다(온라인 2단 멱등과 같은 정책: 그 창 안의 진짜 두 번째 식사는 청구되지 않는다).
+    - duplicate: 같은 QR·토큰의 기록이 이미 있거나(토큰은 1회용), 같은 식당에서 이미 결제됐다.
+      온라인 QR은 그 유효 시간 앞뒤, 토큰은 used_at 앞뒤 ``RELAY_DECISION_TTL_SECONDS``를 본다.
+      온라인 승인 응답을 못 받은 리더가 오프라인으로 다시 승인한 경우와 재스캔을 막는다(온라인
+      2단 멱등과 같은 정책: 그 창 안의 진짜 두 번째 식사는 청구되지 않는다).
     """
-    genuine = hmac.compare_digest(
+    secret = Config.RELAY_TOKEN_SECRET
+    window = Config.RELAY_DECISION_TTL_SECONDS
+    if hmac.compare_digest(
+        record.qn, relay_v2.ticket_qn(secret, record.ticket_id, record.iat)
+    ):
+        lifetime = TICKET_TOKEN_TTL_SECONDS
+        charged_from, charged_to = record.iat - window, record.iat + lifetime + window
+    elif hmac.compare_digest(
         record.qn,
-        relay_v2.ticket_qn(Config.RELAY_TOKEN_SECRET, record.ticket_id, record.iat),
-    )
+        relay_v2.ticket_qn(secret, record.ticket_id, record.iat, relay_v2.QN_OFFLINE),
+    ):
+        # 토큰 exp = 창 끝 = iat + ttl + index(index < 창당 장수)
+        lifetime = Config.OFFLINE_TOKEN_TTL_SECONDS + Config.OFFLINE_TOKENS_PER_WINDOW
+        charged_from, charged_to = record.used_at - window, record.used_at + window
+    else:
+        return OFFLINE_INVALID
     valid_from = record.iat - OFFLINE_CLOCK_SKEW_SECONDS
-    valid_to = record.iat + TICKET_TOKEN_TTL_SECONDS + OFFLINE_CLOCK_SKEW_SECONDS
-    if not genuine or worker is None or not valid_from <= record.used_at <= valid_to:
+    valid_to = record.iat + lifetime + OFFLINE_CLOCK_SKEW_SECONDS
+    if worker is None or not valid_from <= record.used_at <= valid_to:
         return OFFLINE_INVALID
 
     same_qr = await db.scalar(
@@ -1426,18 +1474,15 @@ async def _offline_verdict(
         )
         .limit(1)
     )
-    window = Config.RELAY_DECISION_TTL_SECONDS
     charged_nearby = await db.scalar(
         select(MealTicketUsageRequest.id)
         .where(
             MealTicketUsageRequest.worker_id == worker.id,
             MealTicketUsageRequest.restaurant_id == restaurant.id,
             MealTicketUsageRequest.approved_at
-            >= datetime.fromtimestamp(record.iat - window, timezone.utc),
+            >= datetime.fromtimestamp(charged_from, timezone.utc),
             MealTicketUsageRequest.approved_at
-            <= datetime.fromtimestamp(
-                record.iat + TICKET_TOKEN_TTL_SECONDS + window, timezone.utc
-            ),
+            <= datetime.fromtimestamp(charged_to, timezone.utc),
         )
         .limit(1)
     )

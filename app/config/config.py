@@ -132,6 +132,10 @@ class Config:
     # 같은 (식당, 근로자) 결제 결정을 재사용하는 창(초). 리더가 결과를 못 받아 QR을 다시
     # 찍어도 한 번만 청구된다. 짧게 하면 오탐(연속 두 끼)이 줄고 이중 결제 위험이 는다.
     RELAY_DECISION_TTL_SECONDS = int(os.getenv("RELAY_DECISION_TTL_SECONDS", "90"))
+    # 오프라인 전용 1회용 토큰(SK2O): 창 길이(초)와 창당 장수. 근로자가 동시에 쥘 수 있는 토큰은
+    # 최대 2 × 장수(현재 창 + 직전 창)이며, 이 값이 사실상 오프라인 청구 한도다.
+    OFFLINE_TOKEN_TTL_SECONDS = int(os.getenv("OFFLINE_TOKEN_TTL_SECONDS", "43200"))
+    OFFLINE_TOKENS_PER_WINDOW = int(os.getenv("OFFLINE_TOKENS_PER_WINDOW", "2"))
     TZ = timezone(TIMEZONE)
     CORS_ALLOW_ORIGINS = comma_separated_env(
         "CORS_ALLOW_ORIGINS",

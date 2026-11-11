@@ -61,6 +61,13 @@ class WorkerQrResponse(BaseModel):
     ttl: int
 
 
+class OfflineTokensResponse(BaseModel):
+    """오프라인 전용 1회용 토큰(``SK2O.<b64url>``)과 만료 시각(unix 초, 모든 토큰 공통)."""
+
+    tokens: list[str]
+    exp: int
+
+
 class RelayRequest(BaseModel):
     """BLE 중계 요청 본문. ``req``는 v1 87바이트 또는 v2 암호화 요청(base64url)."""
 

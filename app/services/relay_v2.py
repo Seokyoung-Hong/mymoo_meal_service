@@ -53,6 +53,8 @@ RESPONSE_LEN = AEAD_NONCE_LEN + RESPONSE_PLAIN_LEN + SIG_LEN + TAG_LEN  # 166
 CTX_QR = b"SK2qr"
 CTX_REQ = b"SK2req"
 CTX_RSP = b"SK2rsp"
+CTX_OFFLINE = b"SK2off"
+OFFLINE_PREFIX = "SK2O"
 HKDF_INFO = b"SK2 relay v2"
 _ZERO_NONCE = bytes(12)
 
@@ -148,25 +150,85 @@ def raw_public(key: Ed25519PublicKey | X25519PublicKey) -> bytes:
     return key.public_bytes(Encoding.Raw, PublicFormat.Raw)
 
 
-def ticket_qn(secret: bytes, ticket_id: UUID, iat: int) -> bytes:
-    """QR nonce. 서버가 저장하지 않고도 오프라인 기록의 진위를 다시 계산할 수 있다."""
+QN_ONLINE = 0x02
+QN_OFFLINE = 0x03
+
+
+def ticket_qn(
+    secret: bytes, ticket_id: UUID, iat: int, domain: int = QN_ONLINE
+) -> bytes:
+    """QR nonce. 서버가 저장하지 않고도 오프라인 기록의 진위를 다시 계산할 수 있다.
+
+    ``domain``으로 온라인 QR(0x02)과 오프라인 토큰(0x03)을 가른다. 기록에는 종류가 없으므로
+    서버는 두 값을 모두 계산해 어느 쪽인지 알아낸다.
+    """
     mac = hmac.new(
-        secret, b"\x02" + ticket_id.bytes + struct.pack("<I", iat), hashlib.sha256
+        secret,
+        bytes([domain]) + ticket_id.bytes + struct.pack("<I", iat),
+        hashlib.sha256,
     )
     return mac.digest()[:8]
+
+
+def _signed_ticket(  # noqa: PLR0913
+    keys: ServerKeys,
+    secret: bytes,
+    ticket_id: UUID,
+    iat: int,
+    ttl: int,
+    *,
+    domain: int,
+    context: bytes,
+) -> bytes:
+    body = (
+        struct.pack("<BB", VERSION, KID)
+        + ticket_id.bytes
+        + ticket_qn(secret, ticket_id, iat, domain)
+        + struct.pack("<II", iat, iat + ttl)
+    )
+    return body + keys.sign.sign(context + body)
 
 
 def make_qr(
     keys: ServerKeys, secret: bytes, ticket_id: UUID, iat: int, ttl: int
 ) -> str:
     """``SK2.<b64url(body‖sig)>``. 앱이 뒤에 ``.<ble_id>``를 붙여 QR을 그린다."""
-    body = (
-        struct.pack("<BB", VERSION, KID)
-        + ticket_id.bytes
-        + ticket_qn(secret, ticket_id, iat)
-        + struct.pack("<II", iat, iat + ttl)
+    signed = _signed_ticket(
+        keys, secret, ticket_id, iat, ttl, domain=QN_ONLINE, context=CTX_QR
     )
-    return f"{QR_PREFIX}.{b64url(body + keys.sign.sign(CTX_QR + body))}"
+    return f"{QR_PREFIX}.{b64url(signed)}"
+
+
+def make_offline_tokens(  # noqa: PLR0913
+    keys: ServerKeys,
+    secret: bytes,
+    ticket_id: UUID,
+    now: int,
+    ttl: int,
+    count: int,
+) -> list[str]:
+    """오프라인 전용 1회용 토큰 ``SK2O.<b64url(body‖sig)>`` (docs/ble-relay-v2.md §6-1).
+
+    창(``ttl``초) 단위로 결정적이다. 같은 창에서 다시 받아도 같은 토큰이 나오므로, 근로자가 동시에
+    쥘 수 있는 토큰은 현재 창과 직전 창을 합쳐 최대 ``2 × count``장이다.
+    ``iat``는 창 시작에서 1초씩 앞당겨 토큰마다 qn이 다르게 한다.
+    """
+    base = now - now % ttl
+    return [
+        f"{OFFLINE_PREFIX}."
+        + b64url(
+            _signed_ticket(
+                keys,
+                secret,
+                ticket_id,
+                base - index,
+                ttl + index,
+                domain=QN_OFFLINE,
+                context=CTX_OFFLINE,
+            )
+        )
+        for index in range(count)
+    ]
 
 
 def read_qr(keys: ServerKeys, qr_signed: bytes) -> Ticket | None:
