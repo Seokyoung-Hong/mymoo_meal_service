@@ -130,6 +130,7 @@ def _reader_response(reader: RestaurantReader) -> ReaderResponse:
         id=reader.id,
         bt_mac=reader.bt_mac,
         label=reader.label,
+        pubkey=reader.pubkey,
         last_config_ctr=reader.last_config_ctr,
         last_config_at=reader.last_config_at,
         created_at=reader.created_at,
@@ -187,10 +188,11 @@ async def list_readers(
 async def register_reader(
     restaurant_id: int,
     payload: ReaderCreate,
+    request: Request,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_user)],
 ) -> BaseSchema[ReaderResponse]:
-    """Register a reader, or relabel it if this restaurant already registered it."""
+    """Register a reader, or relabel it (and set its v2 pubkey) if already registered."""
     _ = await get_restaurant_with_permission(restaurant_id, db, current_user)
     bt_mac = normalize_bt_mac(payload.bt_mac)
 
@@ -212,8 +214,26 @@ async def register_reader(
         db.add(reader)
     else:
         reader.label = payload.label
+    pubkey = payload.pubkey.lower() if payload.pubkey is not None else None
+    pubkey_changed = pubkey is not None and pubkey != reader.pubkey
+    if pubkey_changed:
+        reader.pubkey = pubkey
 
     try:
+        if pubkey_changed:
+            # 리더 공개키는 결제 권한 그 자체다. 누가 바꿨는지 남긴다.
+            await db.flush()
+            _ = add_audit_log(
+                db,
+                AuditLogEntry(
+                    request_id=request_id_from_request(request),
+                    actor_user_id=current_user.user_id,
+                    action="restaurant_reader.pubkey.set",
+                    resource_type="restaurant_reader",
+                    resource_id=reader.id,
+                    after={"bt_mac": bt_mac, "pubkey": pubkey},
+                ),
+            )
         await db.commit()
         await db.refresh(reader)
     except Exception:

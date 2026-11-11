@@ -40,6 +40,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
 from app.config import Config, logger
+from app.models.readers import RelayOfflineRecord, RestaurantReader
 from app.models.restaurants import Restaurant
 from app.models.user import User
 from app.models.worker import (
@@ -59,6 +60,7 @@ from app.schemas.worker import (
     MealAllowanceCreate,
     MealTicketResponse,
     MockCardChargeCreate,
+    RelayKeysResponse,
     RelayRequest,
     RelayResponse,
     RestaurantRevenueResponse,
@@ -69,6 +71,7 @@ from app.schemas.worker import (
     TicketUsageRequestStatus,
     WorkerQrResponse,
 )
+from app.services import relay_v2
 from app.services.audit import AuditLogEntry, add_audit_log, request_id_from_request
 from app.services.pricing import resolve_price
 from app.utils.auth import optional_metrics_x_user_id
@@ -403,6 +406,7 @@ async def get_worker_qr(
         data=WorkerQrResponse(
             url=url,
             tok=make_ticket_token(current_user.user_id),
+            qr2=_make_qr2(current_user.user_id),
             ttl=TICKET_TOKEN_TTL_SECONDS,
         )
     )
@@ -1078,16 +1082,41 @@ async def _relay_charge(  # noqa: PLR0913
     같은 (식당, 근로자)에 최근 내린 결정이 있으면 결제하지 않고 그 결정을 재사용한다.
     응답은 언제나 **이번 요청의 nonce**로 다시 서명한다(리더가 nonce 일치를 요구한다).
     """
+    decision, reused = await _relay_decide(
+        db,
+        request,
+        restaurant,
+        worker_user_id,
+        action="meal_ticket_usage_request.ble_relay",
+        retire_prev_key=key_is_current,
+    )
+    return _relay_decided(decision, nonce, key), reused
+
+
+async def _relay_decide(  # noqa: PLR0913
+    db: AsyncSession,
+    request: Request,
+    restaurant: Restaurant,
+    worker_user_id: str,
+    *,
+    action: str,
+    retire_prev_key: bool = False,
+) -> tuple[tuple[int, int, int, int, int], bool]:
+    """(식당, 근로자) 결제 결정. 최근 결정이 있으면 결제 없이 재사용한다(v1·v2 공용).
+
+    Returns:
+        ((status, price, applied, cash, txid), 재사용 여부)
+    """
     worker = await db.scalar(select(User).where(User.user_id == worker_user_id))
     if worker is None:
-        return _relay_pack(RELAY_INVALID_QR, nonce, key), False
+        return (RELAY_INVALID_QR, 0, 0, 0, 0), False
 
     decision_key = (restaurant.id, worker_user_id)
     decision = _relay_decision(decision_key)
     if decision is not None:
-        return _relay_decided(decision, nonce, key), True
+        return decision, True
 
-    if key_is_current and restaurant.scanner_key_hash_prev is not None:
+    if retire_prev_key and restaurant.scanner_key_hash_prev is not None:
         # 새 키로 결제가 성공하면 유예 키를 버린다(실패하면 롤백되어 그대로 남는다).
         restaurant.scanner_key_hash_prev = None
     try:
@@ -1098,18 +1127,13 @@ async def _relay_charge(  # noqa: PLR0913
             worker=worker,
             approver_id=restaurant.owner,
             actor_user_id=f"relay:restaurant:{restaurant.id}",
-            action="meal_ticket_usage_request.ble_relay",
+            action=action,
             meal_type=None,
             served_date=None,
             meal_price=None,
         )
     except HTTPException as exc:
-        if exc.status_code == Config.HttpStatus.BAD_REQUEST:
-            decision = (RELAY_NO_PRICE, 0, 0, 0, 0)
-        elif exc.status_code == Config.HttpStatus.CONFLICT:
-            decision = (RELAY_INSUFFICIENT, 0, 0, 0, 0)
-        else:
-            raise
+        decision = (_relay_refusal(exc), 0, 0, 0, 0)
     else:
         decision = (
             RELAY_OK,
@@ -1119,7 +1143,16 @@ async def _relay_charge(  # noqa: PLR0913
             data.id,
         )
     _relay_remember_decision(decision_key, decision)
-    return _relay_decided(decision, nonce, key), False
+    return decision, False
+
+
+def _relay_refusal(exc: HTTPException) -> int:
+    """``_charge_wallet``의 거절을 relay status로. 그 밖의 오류는 다시 던진다."""
+    if exc.status_code == Config.HttpStatus.BAD_REQUEST:
+        return RELAY_NO_PRICE
+    if exc.status_code == Config.HttpStatus.CONFLICT:
+        return RELAY_INSUFFICIENT
+    raise exc
 
 
 def _relay_decided(
@@ -1171,12 +1204,254 @@ async def _relay_settle(
     )
 
 
+# ---------------------------------------------------------------------------
+# BLE 중계 v2 — docs/ble-relay-v2.md
+# 서버 서명(Ed25519) · 요청 암호화(폰이 못 읽음) · 리더별 키 · 오프라인 기록 정산
+# ---------------------------------------------------------------------------
+
+OFFLINE_CHARGED = "charged"
+OFFLINE_DUPLICATE = "duplicate"
+OFFLINE_INVALID = "invalid"
+# 오프라인 기록 used_at(리더 RTC)이 QR 유효 시간에서 벗어나도 되는 폭. RTC는 서명된
+# server_time으로 보정되므로 몇 초 수준이어야 한다.
+OFFLINE_CLOCK_SKEW_SECONDS = 300
+_OFFLINE_REFUSALS = {RELAY_NO_PRICE: "no_price", RELAY_INSUFFICIENT: "insufficient"}
+
+
+def _v2_keys() -> relay_v2.ServerKeys:
+    return relay_v2.ServerKeys.from_secret(Config.RELAY_TOKEN_SECRET)
+
+
+def _make_qr2(worker_user_id: str) -> str | None:
+    """v2 QR 문자열. sub가 UUID가 아닌 레거시 계정이면 None."""
+    try:
+        ticket_id = UUID(worker_user_id)
+    except ValueError:
+        return None
+    return relay_v2.make_qr(
+        _v2_keys(),
+        Config.RELAY_TOKEN_SECRET,
+        ticket_id,
+        int(time.time()),
+        TICKET_TOKEN_TTL_SECONDS,
+    )
+
+
+@router.get("/relay/keys", dependencies=[Depends(optional_metrics_x_user_id)])
+async def relay_keys() -> BaseSchema[RelayKeysResponse]:
+    """Server public keys a v2 reader is provisioned with (USB, at install)."""
+    keys = _v2_keys()
+    return BaseSchema[RelayKeysResponse](
+        data=RelayKeysResponse(
+            kid=relay_v2.KID,
+            sign_pub=keys.sign_pub.hex(),
+            enc_pub=keys.enc_pub.hex(),
+        )
+    )
+
+
+async def _relay_settle_v2(
+    db: AsyncSession, request: Request, req: bytes
+) -> tuple[bytes, bool, int]:
+    """v2 요청을 복호화·검증·결제한다. (암호화된 응답, 결정 재사용 여부, status).
+
+    Raises:
+        relay_v2.RelayV2Error: 길이·버전·복호화 오류(400).
+    """
+    keys = _v2_keys()
+    opened = relay_v2.open_request(keys, req)
+    qr_body = opened.qr_signed
+
+    def seal(
+        status: int,
+        decision: tuple[int, int, int, int, int] = (0, 0, 0, 0, 0),
+        ack_seq: int = 0,
+    ) -> bytes:
+        _, price, applied, cash, txid = decision
+        return relay_v2.seal_response(
+            keys,
+            opened.k_rsp,
+            relay_v2.Response(
+                status=status,
+                rnonce=opened.rnonce,
+                reader_id=opened.reader_id,
+                ticket_id=qr_body[2:18],
+                qn=qr_body[18:26],
+                server_time=int(time.time()),
+                txid=txid,
+                meal_price=price,
+                ticket_applied=applied,
+                cash=cash,
+                ack_seq=ack_seq,
+            ),
+        )
+
+    reader = await db.get(RestaurantReader, opened.reader_id)
+    restaurant = None
+    if reader is not None:
+        restaurant = await db.scalar(
+            select(Restaurant).where(
+                Restaurant.id == reader.restaurant_id,
+                Restaurant.is_active.is_(True),
+            )
+        )
+    if (
+        reader is None
+        or reader.pubkey is None
+        or restaurant is None
+        or not relay_v2.reader_signature_ok(bytes.fromhex(reader.pubkey), opened)
+    ):
+        return seal(RELAY_DEVICE_AUTH), False, RELAY_DEVICE_AUTH
+
+    ack_seq = await _relay_offline_settle(
+        db, request, reader, restaurant, opened.offline
+    )
+    ticket = relay_v2.read_qr(keys, qr_body)
+    if ticket is None:
+        return seal(RELAY_INVALID_QR, ack_seq=ack_seq), False, RELAY_INVALID_QR
+    if ticket.exp < time.time():
+        return seal(RELAY_QR_EXPIRED, ack_seq=ack_seq), False, RELAY_QR_EXPIRED
+    decision, reused = await _relay_decide(
+        db,
+        request,
+        restaurant,
+        str(ticket.ticket_id),
+        action="meal_ticket_usage_request.ble_relay_v2",
+    )
+    return seal(decision[0], decision, ack_seq), reused, decision[0]
+
+
+async def _relay_offline_settle(
+    db: AsyncSession,
+    request: Request,
+    reader: RestaurantReader,
+    restaurant: Restaurant,
+    records: tuple[relay_v2.OfflineRecord, ...],
+) -> int:
+    """오프라인 기록을 ``(리더, seq)``당 한 번만 정산하고 ack_seq(가장 큰 seq)를 돌려준다."""
+    for record in records:
+        done = await db.scalar(
+            select(RelayOfflineRecord.id).where(
+                RelayOfflineRecord.reader_id == reader.id,
+                RelayOfflineRecord.seq == record.seq,
+            )
+        )
+        if done is None:
+            await _relay_offline_record(db, request, reader, restaurant, record)
+    return max((record.seq for record in records), default=0)
+
+
+async def _relay_offline_record(
+    db: AsyncSession,
+    request: Request,
+    reader: RestaurantReader,
+    restaurant: Restaurant,
+    record: relay_v2.OfflineRecord,
+) -> None:
+    """오프라인 기록 한 건을 판정하고, 청구 대상이면 결제한다.
+
+    ponytail: 같은 QR을 두 리더가 동시에 올리는 경합은 막지 않는다(워커 1개·드문 경우).
+    막아야 하면 (ticket_id, qn) 부분 유니크 인덱스로 옮긴다.
+    """
+    ticket_id = str(record.ticket_id)
+    used_at = datetime.fromtimestamp(record.used_at, timezone.utc)
+    worker = await db.scalar(select(User).where(User.user_id == ticket_id))
+    verdict = await _offline_verdict(db, restaurant, worker, record)
+    row = RelayOfflineRecord(
+        reader_id=reader.id,
+        seq=record.seq,
+        ticket_id=ticket_id,
+        qn=record.qn.hex(),
+        used_at=used_at,
+        status=verdict or OFFLINE_CHARGED,
+    )
+    db.add(row)
+    if verdict is None and worker is not None:
+        try:
+            data = await _charge_wallet(
+                db,
+                request,
+                restaurant=restaurant,
+                worker=worker,
+                approver_id=restaurant.owner,
+                actor_user_id=f"relay:reader:{reader.id}",
+                action="meal_ticket_usage_request.ble_offline",
+                meal_type=None,
+                served_date=used_at.astimezone(Config.TZ).date(),
+                meal_price=None,
+            )
+        except HTTPException as exc:
+            row.status = _OFFLINE_REFUSALS[_relay_refusal(exc)]
+        else:
+            row.usage_request_id = data.id
+    try:
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        raise
+    logger.info(
+        "relay offline reader=%d seq=%d status=%s", reader.id, record.seq, row.status
+    )
+
+
+async def _offline_verdict(
+    db: AsyncSession,
+    restaurant: Restaurant,
+    worker: User | None,
+    record: relay_v2.OfflineRecord,
+) -> str | None:
+    """청구하면 안 되는 기록의 status. 청구 대상이면 None.
+
+    - invalid: 서버가 발급한 QR이 아니거나(qn 불일치), 미등록 근로자거나, used_at이 QR 유효
+      시간에서 ``OFFLINE_CLOCK_SKEW_SECONDS`` 넘게 벗어났다.
+    - duplicate: 같은 QR의 오프라인 기록이 이미 있거나, 이 QR 유효 시간 앞뒤
+      ``RELAY_DECISION_TTL_SECONDS`` 안에 같은 식당에서 이미 결제됐다. 온라인 승인 뒤 응답을
+      못 받은 리더가 오프라인으로 다시 승인한 경우와, 재스캔한 새 QR이 오프라인으로 간 경우를
+      막는다(온라인 2단 멱등과 같은 정책: 그 창 안의 진짜 두 번째 식사는 청구되지 않는다).
+    """
+    genuine = hmac.compare_digest(
+        record.qn,
+        relay_v2.ticket_qn(Config.RELAY_TOKEN_SECRET, record.ticket_id, record.iat),
+    )
+    valid_from = record.iat - OFFLINE_CLOCK_SKEW_SECONDS
+    valid_to = record.iat + TICKET_TOKEN_TTL_SECONDS + OFFLINE_CLOCK_SKEW_SECONDS
+    if not genuine or worker is None or not valid_from <= record.used_at <= valid_to:
+        return OFFLINE_INVALID
+
+    same_qr = await db.scalar(
+        select(RelayOfflineRecord.id)
+        .where(
+            RelayOfflineRecord.ticket_id == str(record.ticket_id),
+            RelayOfflineRecord.qn == record.qn.hex(),
+        )
+        .limit(1)
+    )
+    window = Config.RELAY_DECISION_TTL_SECONDS
+    charged_nearby = await db.scalar(
+        select(MealTicketUsageRequest.id)
+        .where(
+            MealTicketUsageRequest.worker_id == worker.id,
+            MealTicketUsageRequest.restaurant_id == restaurant.id,
+            MealTicketUsageRequest.approved_at
+            >= datetime.fromtimestamp(record.iat - window, timezone.utc),
+            MealTicketUsageRequest.approved_at
+            <= datetime.fromtimestamp(
+                record.iat + TICKET_TOKEN_TTL_SECONDS + window, timezone.utc
+            ),
+        )
+        .limit(1)
+    )
+    if same_qr is not None or charged_nearby is not None:
+        return OFFLINE_DUPLICATE
+    return None
+
+
 @router.post(
     "/relay",
     dependencies=[Depends(optional_metrics_x_user_id)],
     responses={Config.HttpStatus.OK: {"model": RelayResponse}},
 )
-async def relay_scan(
+async def relay_scan(  # noqa: PLR0911
     payload: RelayRequest,
     request: Request,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -1196,14 +1471,17 @@ async def relay_scan(
             {"error": "req base64url 디코딩 실패"},
             status_code=Config.HttpStatus.BAD_REQUEST,
         )
+    version = req[0] if req else 0
+    if version == relay_v2.VERSION:
+        return await _relay_scan_v2(db, request, req, started)
     if len(req) != RELAY_REQUEST_LEN:
         return JSONResponse(
             {"error": f"req는 {RELAY_REQUEST_LEN}바이트여야 합니다."},
             status_code=Config.HttpStatus.BAD_REQUEST,
         )
-    if req[0] != RELAY_VERSION:
+    if version != RELAY_VERSION:
         return JSONResponse(
-            {"error": f"지원하지 않는 ver: {req[0]}"},
+            {"error": f"지원하지 않는 ver: {version}"},
             status_code=Config.HttpStatus.BAD_REQUEST,
         )
 
@@ -1218,10 +1496,7 @@ async def relay_scan(
         )
         return JSONResponse({"resp": _b64url(cached)})
     if _relay_rate_limited(_relay_client_key(request)):
-        return JSONResponse(
-            {"error": "요청이 너무 잦습니다."},
-            status_code=Config.HttpStatus.TOO_MANY_REQUESTS,
-        )
+        return _relay_too_many()
 
     response, reused = await _relay_settle(db, request, req)
     _relay_remember(digest, response)
@@ -1231,6 +1506,41 @@ async def relay_scan(
         req[11:19].hex(),
         req[3:11].hex(),
         response[1],
+        " REUSED" if reused else "",
+        int((time.monotonic() - started) * 1000),
+    )
+    return JSONResponse({"resp": _b64url(response)})
+
+
+def _relay_too_many() -> JSONResponse:
+    return JSONResponse(
+        {"error": "요청이 너무 잦습니다."},
+        status_code=Config.HttpStatus.TOO_MANY_REQUESTS,
+    )
+
+
+async def _relay_scan_v2(
+    db: AsyncSession, request: Request, req: bytes, started: float
+) -> JSONResponse:
+    """v2: 1단 멱등·레이트 리밋은 v1과 같고, 처리만 ``_relay_settle_v2``로 간다."""
+    digest = hashlib.sha256(req).digest()
+    cached = _relay_cached(digest)
+    if cached is not None:
+        logger.info("relay v2 digest=%s RESENT", digest[:8].hex())
+        return JSONResponse({"resp": _b64url(cached)})
+    if _relay_rate_limited(_relay_client_key(request)):
+        return _relay_too_many()
+    try:
+        response, reused, status = await _relay_settle_v2(db, request, req)
+    except relay_v2.RelayV2Error as exc:
+        return JSONResponse(
+            {"error": str(exc)}, status_code=Config.HttpStatus.BAD_REQUEST
+        )
+    _relay_remember(digest, response)
+    logger.info(
+        "relay v2 digest=%s status=%d%s %dms",
+        digest[:8].hex(),
+        status,
         " REUSED" if reused else "",
         int((time.monotonic() - started) * 1000),
     )

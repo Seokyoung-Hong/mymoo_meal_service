@@ -23,6 +23,7 @@ PUBLIC_OPERATIONS = {  # 인증 없이 부르는 엔드포인트 (기기·브라
     ("/images/{file_name}", "get"),
     ("/scan", "get"),
     ("/relay", "post"),
+    ("/relay/keys", "get"),
 }
 
 

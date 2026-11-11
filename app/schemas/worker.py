@@ -56,19 +56,29 @@ class WorkerQrResponse(BaseModel):
     url: str
     # BLE 리더용 36바이트 식권 토큰(base64url). Keycloak sub가 UUID가 아니면 None.
     tok: str | None = None
+    # relay v2 QR 문자열 ``SK2.<b64url>`` (docs/ble-relay-v2.md). 앱이 ``.<ble_id>``를 붙인다.
+    qr2: str | None = None
     ttl: int
 
 
 class RelayRequest(BaseModel):
-    """BLE 중계 요청 본문. ``req``는 리더가 서명한 87바이트(base64url)."""
+    """BLE 중계 요청 본문. ``req``는 v1 87바이트 또는 v2 암호화 요청(base64url)."""
 
     req: str
 
 
 class RelayResponse(BaseModel):
-    """BLE 중계 응답 본문. ``resp``는 서버가 서명한 62바이트(base64url)."""
+    """BLE 중계 응답 본문. v1 62바이트 / v2 154바이트(base64url)."""
 
     resp: str
+
+
+class RelayKeysResponse(BaseModel):
+    """relay v2 서버 공개키. 설치 시 리더에 USB로 주입한다(hex)."""
+
+    kid: int
+    sign_pub: str
+    enc_pub: str
 
 
 class ScannerKeyResponse(BaseModel):

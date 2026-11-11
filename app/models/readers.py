@@ -4,7 +4,15 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, ForeignKey, Index, Integer, String
+from sqlalchemy import (
+    BigInteger,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -28,6 +36,8 @@ class RestaurantReader(Base):
     )
     bt_mac: Mapped[str] = mapped_column(String(12), nullable=False, unique=True)
     label: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # relay v2 리더 서명 공개키(Ed25519, hex 64자). 없으면 v2 요청은 기기 인증 오류.
+    pubkey: Mapped[str | None] = mapped_column(String(64), nullable=True)
     last_config_ctr: Mapped[int] = mapped_column(
         Integer,
         nullable=False,
@@ -45,3 +55,36 @@ class RestaurantReader(Base):
     )
 
     __table_args__ = (Index("restaurant_reader_restaurant_index", "restaurant_id"),)
+
+
+class RelayOfflineRecord(Base):
+    """리더가 오프라인으로 승인하고 나중에 올린 기록 한 건 (docs/ble-relay-v2.md §6).
+
+    ``(reader_id, seq)``가 유일하므로 같은 기록을 다시 올려도 한 번만 처리된다.
+    ``status``: ``charged`` · ``insufficient`` · ``no_price`` · ``duplicate`` · ``invalid``.
+    """
+
+    __tablename__ = "relay_offline_record"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    reader_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("restaurant_reader.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    seq: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    ticket_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    qn: Mapped[str] = mapped_column(String(16), nullable=False)
+    used_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    usage_request_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+
+    __table_args__ = (
+        UniqueConstraint("reader_id", "seq"),
+        Index("relay_offline_record_ticket_index", "ticket_id", "qn"),
+    )

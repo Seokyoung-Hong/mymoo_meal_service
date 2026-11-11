@@ -23,6 +23,9 @@ class ReaderCreate(BaseModel):
 
     bt_mac: str
     label: str | None = None
+    # relay v2 리더 서명 공개키(Ed25519 32바이트, hex 64자). 설치 시 USB로 뽑아 넣는다.
+    # 생략하면 기존 값을 유지한다.
+    pubkey: Annotated[str, Field(pattern=r"^[0-9a-fA-F]{64}$")] | None = None
 
 
 class ReaderResponse(BaseModel):
@@ -31,6 +34,7 @@ class ReaderResponse(BaseModel):
     id: int
     bt_mac: str
     label: str | None = None
+    pubkey: str | None = None
     last_config_ctr: int
     last_config_at: Timestamp | None = None
     created_at: Timestamp
