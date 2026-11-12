@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import struct
 import time
 from uuid import UUID
@@ -498,7 +499,7 @@ async def test_offline_token_charges_once(
     used_at = int(time.time()) - 10
 
     use = r.OfflineRecord(TICKET, iat, qn, used_at, 1)
-    reuse = r.OfflineRecord(TICKET, iat, qn, used_at + 3600, 2)  # 스크린샷으로 한 번 더
+    reuse = r.OfflineRecord(TICKET, iat, qn, used_at + 5, 2)  # 스크린샷으로 한 번 더(창 끝을 넘지 않게)
     _, plain = await relay(
         async_client,
         reader_id,
@@ -522,3 +523,73 @@ async def test_offline_token_charges_once(
         .all()
     )
     assert prices == [7000]
+
+
+SETUP_REG = "SK2R:VTV6NQQNDLIEVMRSOQV3JKZ2CNUL2RQV4TTNAISKW4NAC25PQUQKGMWJO6DTO"
+SETUP_QR = (
+    "SK2S.AgGs6-bCDRrQSrIydCu0qzoTaL1GFeTm0CJKtxoBa6-FIKMyyXeHNwEAAAABAAAAHXNzaWQ6"
+    "IFRlc3RBUApwYXNzd29yZDogcHcxMjM0Lsulnms0OamAt12uJDzRPKl2495vrjhfayBcv0a_cpj-"
+    "TA2OETmhI8haqnpwi4_Q6SXZyAUcZwu-eMPcKkAQBw"
+)
+SETUP_WIFI = {"ssid": "TestAP", "password": "pw1234"}
+
+
+def test_setup_qr_document_vector() -> None:
+    """kiosk_c6 SETUP_QR.md §5 벡터: 등록 QR 파싱·설치 QR 바이트가 펌웨어와 같아야 한다."""
+    bt_mac, reader_pub = r.parse_reg_code(SETUP_REG)
+    assert bt_mac == "acebe6c20d1a"
+    assert reader_pub == r.raw_public(READER_KEY.public_key())
+    keys = r.ServerKeys.from_secret(SECRET)
+    payload = b"ssid: TestAP\npassword: pw1234"
+    assert r.make_setup_qr(keys, bt_mac, reader_pub, 1, 1, payload) == SETUP_QR
+
+
+@pytest.mark.parametrize(
+    "reg", ["SK2X:" + SETUP_REG[5:], SETUP_REG[:-2], SETUP_REG + "AA", "SK2R:!!!!"]
+)
+def test_parse_reg_code_rejects_malformed(reg: str) -> None:
+    with pytest.raises(r.RelayV2Error):
+        _ = r.parse_reg_code(reg)
+
+
+async def test_setup_registers_reader_and_issues_increasing_setup_qr(
+    async_client: AsyncClient,
+    db_session: AsyncSession,
+    test_app: FastAPI,
+    fixed_secret: bytes,
+) -> None:
+    _, owner, restaurant = await seed_worker_and_restaurant(db_session)
+    restaurant_id = restaurant.id
+    await override_current_user(test_app, owner)
+    url = f"/restaurants/{restaurant_id}/readers/setup"
+
+    first = await async_client.post(
+        url, json={"reg": SETUP_REG, "label": "카운터", "wifi": SETUP_WIFI}
+    )
+    new_key = Ed25519PrivateKey.from_private_bytes(bytes([0x55] * 32))
+    new_pub = r.raw_public(new_key.public_key())
+    rereg = "SK2R:" + base64.b32encode(bytes.fromhex("acebe6c20d1a") + new_pub).decode()
+    second = await async_client.post(url, json={"reg": rereg.rstrip("=")})
+    bad = await async_client.post(url, json={"reg": "SK2R:AAAA"})
+
+    assert first.status_code == 200, first.text
+    data = first.json()["data"]
+    assert data["bt_mac"] == "acebe6c20d1a"
+    keys = r.ServerKeys.from_secret(SECRET)
+    signed = qr_bytes(data["setup_qr"])
+    body, sig = signed[:-64], signed[-64:]
+    keys.sign.public_key().verify(sig, r.CTX_SETUP + body)
+    reader_id, ctr = struct.unpack("<II", body[40:48])
+    assert (reader_id, ctr) == (data["reader_id"], 1)
+    assert body[49:] == b"ssid: TestAP\npassword: pw1234"
+
+    assert second.status_code == 200, second.text
+    body2 = qr_bytes(second.json()["data"]["setup_qr"])[:-64]
+    assert body2[8:40] == new_pub
+    assert struct.unpack("<II", body2[40:48]) == (reader_id, 2)
+    assert body2[48] == 0
+    listed = await async_client.get(f"/restaurants/{restaurant_id}/readers")
+    [row] = listed.json()["data"]
+    assert (row["label"], row["pubkey"]) == ("카운터", new_pub.hex())
+
+    assert bad.status_code == 400

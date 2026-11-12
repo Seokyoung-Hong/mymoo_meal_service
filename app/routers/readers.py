@@ -38,7 +38,10 @@ from app.schemas.readers import (
     ReaderConfigQrResponse,
     ReaderCreate,
     ReaderResponse,
+    ReaderSetupCreate,
+    ReaderSetupResponse,
 )
+from app.services import relay_v2
 from app.services.audit import AuditLogEntry, add_audit_log, request_id_from_request
 from app.utils.db import check_admin_user, get_current_user, get_db
 from app.utils.restaurants import get_restaurant_with_permission
@@ -154,6 +157,49 @@ async def _get_reader_or_404(
     return reader
 
 
+async def _get_or_add_reader(
+    db: AsyncSession, restaurant_id: int, bt_mac: str
+) -> RestaurantReader:
+    """이 식당의 리더를 찾거나 새로 추가한다. 다른 식당에 등록된 MAC이면 409."""
+    reader = await db.scalar(
+        select(RestaurantReader).where(RestaurantReader.bt_mac == bt_mac)
+    )
+    if reader is not None and reader.restaurant_id != restaurant_id:
+        raise HTTPException(
+            status_code=Config.HttpStatus.CONFLICT,
+            detail="이미 다른 식당에 등록된 리더입니다.",
+        )
+    if reader is None:
+        reader = RestaurantReader(restaurant_id=restaurant_id, bt_mac=bt_mac)
+        db.add(reader)
+    return reader
+
+
+async def _set_pubkey(
+    db: AsyncSession,
+    request: Request,
+    current_user: User,
+    reader: RestaurantReader,
+    pubkey: str | None,
+) -> None:
+    """공개키가 바뀌면 저장하고 감사 로그를 남긴다. 리더 공개키는 결제 권한 그 자체다."""
+    if pubkey is None or pubkey == reader.pubkey:
+        return
+    reader.pubkey = pubkey
+    await db.flush()
+    _ = add_audit_log(
+        db,
+        AuditLogEntry(
+            request_id=request_id_from_request(request),
+            actor_user_id=current_user.user_id,
+            action="restaurant_reader.pubkey.set",
+            resource_type="restaurant_reader",
+            resource_id=reader.id,
+            after={"bt_mac": reader.bt_mac, "pubkey": pubkey},
+        ),
+    )
+
+
 async def _ensure_rid_allowed(restaurant: Restaurant, current_user: User) -> None:
     """rid(식당 ID) 지정은 주인 또는 관리자만 할 수 있다. 매니저는 403."""
     if restaurant.owner == current_user.id:
@@ -195,51 +241,90 @@ async def register_reader(
     """Register a reader, or relabel it (and set its v2 pubkey) if already registered."""
     _ = await get_restaurant_with_permission(restaurant_id, db, current_user)
     bt_mac = normalize_bt_mac(payload.bt_mac)
-
-    reader = await db.scalar(
-        select(RestaurantReader).where(RestaurantReader.bt_mac == bt_mac)
-    )
-    if reader is not None and reader.restaurant_id != restaurant_id:
-        raise HTTPException(
-            status_code=Config.HttpStatus.CONFLICT,
-            detail="이미 다른 식당에 등록된 리더입니다.",
-        )
-
-    if reader is None:
-        reader = RestaurantReader(
-            restaurant_id=restaurant_id,
-            bt_mac=bt_mac,
-            label=payload.label,
-        )
-        db.add(reader)
-    else:
-        reader.label = payload.label
+    reader = await _get_or_add_reader(db, restaurant_id, bt_mac)
+    reader.label = payload.label
     pubkey = payload.pubkey.lower() if payload.pubkey is not None else None
-    pubkey_changed = pubkey is not None and pubkey != reader.pubkey
-    if pubkey_changed:
-        reader.pubkey = pubkey
 
     try:
-        if pubkey_changed:
-            # 리더 공개키는 결제 권한 그 자체다. 누가 바꿨는지 남긴다.
-            await db.flush()
-            _ = add_audit_log(
-                db,
-                AuditLogEntry(
-                    request_id=request_id_from_request(request),
-                    actor_user_id=current_user.user_id,
-                    action="restaurant_reader.pubkey.set",
-                    resource_type="restaurant_reader",
-                    resource_id=reader.id,
-                    after={"bt_mac": bt_mac, "pubkey": pubkey},
-                ),
-            )
+        await _set_pubkey(db, request, current_user, reader, pubkey)
         await db.commit()
         await db.refresh(reader)
     except Exception:
         await db.rollback()
         raise
     return BaseSchema[ReaderResponse](data=_reader_response(reader))
+
+
+@router.post("/{restaurant_id}/readers/setup")
+async def setup_reader(
+    restaurant_id: int,
+    payload: ReaderSetupCreate,
+    request: Request,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_user)],
+) -> BaseSchema[ReaderSetupResponse]:
+    """Register a reader from its OLED registration QR and issue a signed setup QR.
+
+    리더가 화면에 띄운 ``SK2R:``(MAC·공개키)를 폰이 찍어 보내면, 리더를 등록(또는 공개키
+    갱신)하고 운영 서명키로 서명한 ``SK2S.`` 설치 QR을 돌려준다. 리더는 이 QR을 찍어
+    reader_id와 (선택) Wi-Fi 설정을 적용한다. kiosk_c6 SETUP_QR.md, docs/ble-relay-v2.md §2.
+    """
+    _ = await get_restaurant_with_permission(restaurant_id, db, current_user)
+    try:
+        bt_mac, reader_pub = relay_v2.parse_reg_code(payload.reg)
+    except relay_v2.RelayV2Error as exc:
+        raise HTTPException(
+            status_code=Config.HttpStatus.BAD_REQUEST, detail=str(exc)
+        ) from exc
+    setup_payload = (
+        f"ssid: {payload.wifi.ssid}\npassword: {payload.wifi.password}".encode()
+        if payload.wifi is not None
+        else b""
+    )
+    if len(setup_payload) > relay_v2.SETUP_PAYLOAD_MAX:
+        raise HTTPException(
+            status_code=Config.HttpStatus.BAD_REQUEST,
+            detail="Wi-Fi 설정이 너무 깁니다.",
+        )
+
+    reader = await _get_or_add_reader(db, restaurant_id, bt_mac)
+    if payload.label is not None:
+        reader.label = payload.label
+    reader.setup_ctr = (reader.setup_ctr or 0) + 1  # 새 행은 flush 전까지 None
+    try:
+        await _set_pubkey(db, request, current_user, reader, reader_pub.hex())
+        await db.flush()
+        setup_qr = relay_v2.make_setup_qr(
+            relay_v2.ServerKeys.from_secret(Config.RELAY_TOKEN_SECRET),
+            bt_mac,
+            reader_pub,
+            reader.id,
+            reader.setup_ctr,
+            setup_payload,
+        )
+        _ = add_audit_log(
+            db,
+            AuditLogEntry(
+                request_id=request_id_from_request(request),
+                actor_user_id=current_user.user_id,
+                action="restaurant_reader.setup_qr.issue",
+                resource_type="restaurant_reader",
+                resource_id=reader.id,
+                # Wi-Fi 비밀번호는 남기지 않는다.
+                after={
+                    "bt_mac": bt_mac,
+                    "ctr": reader.setup_ctr,
+                    "wifi_ssid": payload.wifi.ssid if payload.wifi else None,
+                },
+            ),
+        )
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        raise
+    return BaseSchema[ReaderSetupResponse](
+        data=ReaderSetupResponse(reader_id=reader.id, bt_mac=bt_mac, setup_qr=setup_qr)
+    )
 
 
 @router.delete(

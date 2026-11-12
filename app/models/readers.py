@@ -44,6 +44,13 @@ class RestaurantReader(Base):
         default=0,
         server_default="0",
     )
+    # 마지막으로 발급한 설치 QR(SK2S) 카운터. 리더는 저장값보다 큰 ctr만 받는다.
+    setup_ctr: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default="0",
+    )
     last_config_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
         nullable=True,

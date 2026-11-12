@@ -76,6 +76,41 @@ class ReaderConfigCreate(BaseModel):
         return value
 
 
+def _reject_newlines(value: str | None) -> str | None:
+    if value is not None and ("\n" in value or "\r" in value):
+        raise ValueError("ssid/password에는 개행을 넣을 수 없습니다.")
+    return value
+
+
+class ReaderSetupWifi(BaseModel):
+    """Wi-Fi settings signed into the setup QR payload."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    ssid: Annotated[str, Field(min_length=1, max_length=64)]
+    password: Annotated[str, Field(max_length=64)] = ""
+
+    _no_newlines = field_validator("ssid", "password")(_reject_newlines)
+
+
+class ReaderSetupCreate(BaseModel):
+    """Registration QR scanned from an unset reader's OLED (kiosk_c6 SETUP_QR.md)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    reg: Annotated[str, Field(max_length=128)]
+    label: str | None = None
+    wifi: ReaderSetupWifi | None = None
+
+
+class ReaderSetupResponse(BaseModel):
+    """Server-signed setup QR for the phone to show to the reader."""
+
+    reader_id: int
+    bt_mac: str
+    setup_qr: str
+
+
 class ReaderConfigQrResponse(BaseModel):
     """Signed config QR string with the counter and payload it commits to."""
 

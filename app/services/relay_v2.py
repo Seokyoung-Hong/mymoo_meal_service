@@ -55,6 +55,11 @@ CTX_REQ = b"SK2req"
 CTX_RSP = b"SK2rsp"
 CTX_OFFLINE = b"SK2off"
 CTX_DEVICE = b"SK2dev"  # 리더 도전값에 폰이 서명할 때(서버는 쓰지 않음, 문서·테스트용)
+CTX_SETUP = b"SK2setup"
+REG_PREFIX = "SK2R:"
+SETUP_PREFIX = "SK2S"
+REG_LEN = 6 + 32
+SETUP_PAYLOAD_MAX = 255
 DEVICE_CHALLENGE = 0x03
 OFFLINE_PREFIX = "SK2O"
 HKDF_INFO = b"SK2 relay v2"
@@ -404,6 +409,48 @@ def open_response(sign_pub: bytes, k_rsp: bytes, resp: bytes) -> bytes:
     plain, sig = signed[:RESPONSE_PLAIN_LEN], signed[RESPONSE_PLAIN_LEN:]
     Ed25519PublicKey.from_public_bytes(sign_pub).verify(sig, CTX_RSP + plain)
     return plain
+
+
+def parse_reg_code(reg: str) -> tuple[str, bytes]:
+    """리더 OLED의 등록 QR ``SK2R:<base32(bt_mac6‖reader_pub32)>``을 (bt_mac hex, 공개키)로.
+
+    서명이 없어 위조할 수 있다. 서버는 관리자 인증으로만 이 값을 믿는다.
+    """
+    text = reg.strip().upper()
+    if not text.startswith(REG_PREFIX):
+        raise RelayV2Error("등록 QR은 SK2R: 로 시작해야 합니다.")
+    code = text[len(REG_PREFIX) :]
+    try:
+        raw = base64.b32decode(code + "=" * (-len(code) % 8))
+    except ValueError as exc:
+        raise RelayV2Error("등록 QR base32 오류") from exc
+    if len(raw) != REG_LEN:
+        raise RelayV2Error(f"등록 QR 길이 오류: {len(raw)}")
+    return raw[:6].hex(), raw[6:]
+
+
+def make_setup_qr(  # noqa: PLR0913
+    keys: ServerKeys,
+    bt_mac: str,
+    reader_pub: bytes,
+    reader_id: int,
+    ctr: int,
+    payload: bytes = b"",
+) -> str:
+    """서명된 설치 QR ``SK2S.<b64url(body‖sig)>`` (kiosk_c6 SETUP_QR.md §3).
+
+    body = ver ‖ kid ‖ bt_mac(6) ‖ reader_pub(32) ‖ reader_id(4LE) ‖ ctr(4LE) ‖ plen ‖ payload.
+    """
+    if len(payload) > SETUP_PAYLOAD_MAX:
+        raise RelayV2Error(f"설치 payload는 {SETUP_PAYLOAD_MAX}바이트 이하여야 합니다.")
+    body = (
+        struct.pack("<BB", VERSION, KID)
+        + bytes.fromhex(bt_mac)
+        + reader_pub
+        + struct.pack("<IIB", reader_id, ctr, len(payload))
+        + payload
+    )
+    return f"{SETUP_PREFIX}.{b64url(body + keys.sign.sign(CTX_SETUP + body))}"
 
 
 def b64url(raw: bytes) -> str:

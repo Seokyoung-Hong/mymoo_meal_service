@@ -37,7 +37,21 @@ v1(docs/ble-relay.md)은 기존 리더용으로 계속 동작한다. 같은 `POS
 - 서버 키는 `RELAY_TOKEN_SECRET`에서 유도한다: `seed = HMAC-SHA256(SECRET, "SK2sign")`, `enc = HMAC-SHA256(SECRET, "SK2enc")`.
   비밀이 같으면 재시작해도 공개키가 같다. **운영에서 `RELAY_TOKEN_SECRET`을 바꾸면 모든 리더에 공개키를 다시 넣어야 한다.**
 - `kid = 1` 고정. 키 교체가 필요해지면 kid를 올리고 두 키를 함께 받게 한다(지금은 없음).
-- 설치 절차
+- 설치 절차 A — QR만으로 (기본, kiosk_c6 `SETUP_QR.md`). 리더 펌웨어에 운영 `sign_pub`·`enc_pub`(kid 1)가 고정돼 있다.
+  1. 미설치 리더가 OLED에 등록 QR `SK2R:` + base32(bt_mac(6) ‖ reader_pub(32)) 표시(RFC 4648 대문자, 패딩 없음, 66자).
+     서명 없음 — 서버는 관리자 인증으로만 믿는다.
+  2. 사장님 앱이 찍어 `POST /restaurants/{id}/readers/setup {"reg":"SK2R:..","label"?,"wifi"?:{"ssid","password"}}` (Bearer, 식당 권한)
+     → 리더 등록(같은 MAC이면 공개키만 갱신, 다른 식당 MAC이면 409, 형식 오류 400), `setup_ctr += 1`
+     → `{"data":{"reader_id":n,"bt_mac":"..","setup_qr":"SK2S.<b64url>"}}`
+  3. 앱이 `setup_qr`를 크게 띄우고(밝기 최대) 리더 GM65가 찍는다.
+  ```
+  body = ver(1)=2 ‖ kid(1) ‖ bt_mac(6) ‖ reader_pub(32) ‖ reader_id(4LE) ‖ ctr(4LE) ‖ plen(1) ‖ payload
+  sig  = Ed25519(SPK, "SK2setup" ‖ body)        payload = "ssid: ..\npassword: .." (wifi 줄 때만, ≤255B)
+  qr   = "SK2S." + b64url(body ‖ sig)
+  ```
+  - 리더 검증: 길이·ver → 서명 → kid → bt_mac·reader_pub이 자기 것 → reader_id ≠ 0 → ctr > 저장값.
+  - 감사 로그 `restaurant_reader.setup_qr.issue`(bt_mac·ctr·ssid만, 비밀번호 없음). 벡터는 §8 끝.
+- 설치 절차 B — USB (예비)
   1. `GET /relay/keys` → `{"kid":1,"sign_pub":"<hex64>","enc_pub":"<hex64>"}` (인증 없음)
   2. USB로 리더에 `sign_pub`·`enc_pub`·`kid` 주입, 리더 공개키(hex64) 읽기
   3. `POST /restaurants/{id}/readers {"bt_mac":"..","pubkey":"<hex64>"}` (Bearer, 식당 권한) → 응답의 `id`가 **reader_id**
@@ -259,6 +273,11 @@ token[0] raw  = 02012ab708e15dc74f54abc4b291f0a08dd10afebba62f6a66f88061496b400a
                 e22e3ce7345c66979a5a986c9cb3e052310b731741787106206c1b07
                 (qn 0afebba62f6a66f8, iat 1799971200, exp 1800014400)
 token[0]      = SK2O.AgEqtwjhXcdPVKvEspHwoI3RCv67pi9qZviAYUlrQApKa9dZeTu8E6KBmoJ8dq22-6ikmu4Af0ny0JktmbglrSxIC5Ny5NRpXoTstk9hpa14GY1Ma5M7ypYc61u_PEj9lZupxdWb4i485zRcZpeaWphsnLPgUjELcxdBeHEGIGwbBw
+
+설치 QR (§2 A, test_setup_qr_document_vector): bt_mac acebe6c20d1a, RK 위와 같음, reader_id 1, ctr 1
+reg           = SK2R:VTV6NQQNDLIEVMRSOQV3JKZ2CNUL2RQV4TTNAISKW4NAC25PQUQKGMWJO6DTO
+payload       = "ssid: TestAP\npassword: pw1234" (29B)
+setup_qr      = SK2S.AgGs6-bCDRrQSrIydCu0qzoTaL1GFeTm0CJKtxoBa6-FIKMyyXeHNwEAAAABAAAAHXNzaWQ6IFRlc3RBUApwYXNzd29yZDogcHcxMjM0Lsulnms0OamAt12uJDzRPKl2495vrjhfayBcv0a_cpj-TA2OETmhI8haqnpwi4_Q6SXZyAUcZwu-eMPcKkAQBw
 dev_req (29B) = 03000102030405060708090a0b0c0d0e0f010000000afebba62f6a66f8   (rnonce 00..0f, reader_id 1)
 dev_resp(65B) = 03dbe7fad47ae04387b13b16ff020999974ac3df6b93d83e34a0a2de6edeb2e7302b
                 6b56a3a6ce0d9c4ede2be9192a63f1740f3e7baedc388a02a0c404113bf505
