@@ -79,7 +79,7 @@ from app.services.pricing import resolve_price
 from app.utils.auth import optional_metrics_x_user_id
 from app.utils.events import publish, sse_response
 from app.utils.db import get_admin_user, get_current_user, get_db
-from app.utils.restaurants import get_restaurant_with_permission
+from app.utils.restaurants import get_restaurant_with_permission, relay_dedup_seconds
 
 
 router = APIRouter(tags=["Worker"])
@@ -1019,6 +1019,8 @@ _relay_hits: dict[str, tuple[int, int]] = {}
 _relay_decisions: dict[
     tuple[int, str], tuple[float, tuple[int, int, int, int, int]]
 ] = {}
+# 식당별 재결제 차단 창의 상한(초). 리더 설정 dedup: 범위(30..600)와 같다.
+RELAY_DEDUP_MAX_SECONDS = 600
 
 
 def _b64url(raw: bytes) -> str:
@@ -1094,10 +1096,15 @@ def _relay_remember(digest: bytes, response: bytes) -> None:
     _relay_replies[digest] = (now, response)
 
 
-def _relay_decision(key: tuple[int, str]) -> tuple[int, int, int, int, int] | None:
-    """(식당, 근로자)로 최근에 내린 결정. 창 시작은 첫 결정 시각이라 재사용해도 늘지 않는다."""
+def _relay_decision(
+    key: tuple[int, str], ttl: int
+) -> tuple[int, int, int, int, int] | None:
+    """(식당, 근로자)로 최근에 내린 결정. 창 시작은 첫 결정 시각이라 재사용해도 늘지 않는다.
+
+    창 길이(``ttl``)는 조회 시점의 식당 설정이라, 사장님이 줄이면 바로 반영된다.
+    """
     hit = _relay_decisions.get(key)
-    if hit is None or time.monotonic() - hit[0] >= Config.RELAY_DECISION_TTL_SECONDS:
+    if hit is None or time.monotonic() - hit[0] >= ttl:
         return None
     return hit[1]
 
@@ -1106,8 +1113,9 @@ def _relay_remember_decision(
     key: tuple[int, str], decision: tuple[int, int, int, int, int]
 ) -> None:
     now = time.monotonic()
+    # 식당마다 창이 다르고 바뀔 수도 있어, 설정 상한(600초)이 지난 것만 버린다.
     for stale, (decided_at, _) in list(_relay_decisions.items()):
-        if now - decided_at >= Config.RELAY_DECISION_TTL_SECONDS:
+        if now - decided_at >= RELAY_DEDUP_MAX_SECONDS:
             del _relay_decisions[stale]
     _relay_decisions[key] = (now, decision)
 
@@ -1194,7 +1202,7 @@ async def _relay_decide(  # noqa: PLR0913
         return (RELAY_INVALID_QR, 0, 0, 0, 0), False
 
     decision_key = (restaurant.id, worker_user_id)
-    decision = _relay_decision(decision_key)
+    decision = _relay_decision(decision_key, relay_dedup_seconds(restaurant))
     if decision is not None:
         # 재스캔한 새 요청이다. 이미 승인됐으면 OK가 아니라 DUPLICATE로 알린다(금액·txid는
         # 첫 결제 것을 그대로 실어 리더·로그에서 대조할 수 있게 한다). 거절 결정은 그대로 준다.
@@ -1498,7 +1506,7 @@ async def _offline_verdict(
       2단 멱등과 같은 정책: 그 창 안의 진짜 두 번째 식사는 청구되지 않는다).
     """
     secret = Config.RELAY_TOKEN_SECRET
-    window = Config.RELAY_DECISION_TTL_SECONDS
+    window = relay_dedup_seconds(restaurant)
     if hmac.compare_digest(
         record.qn, relay_v2.ticket_qn(secret, record.ticket_id, record.iat)
     ):

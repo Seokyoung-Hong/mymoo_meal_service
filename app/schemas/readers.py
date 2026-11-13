@@ -56,6 +56,10 @@ class ReaderConfigCreate(BaseModel):
     t_adv: TimeoutMs | None = None
     t_req: TimeoutMs | None = None
     t_rsp: TimeoutMs | None = None
+    # 음량 %, 음성 속도 배율, 재결제 차단 창(초). 범위는 펌웨어 applyConfigText와 같다.
+    vol: Annotated[int, Field(ge=0, le=100)] | None = None
+    tts: Annotated[float, Field(ge=0.5, le=2.0)] | None = None
+    dedup: Annotated[int, Field(ge=30, le=600)] | None = None
 
     @field_validator("ssid", "password")
     @classmethod
@@ -117,3 +121,9 @@ class ReaderConfigQrResponse(BaseModel):
     qr: str
     ctr: int
     payload: str
+
+
+class RelaySettingsResponse(BaseModel):
+    """식당 결제 중계 설정. dedup은 같은 근로자 재결제를 막는 창(초)."""
+
+    dedup: int

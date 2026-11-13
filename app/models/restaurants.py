@@ -91,6 +91,10 @@ class Restaurant(Base):
         String(64), nullable=True
     )
 
+    # 재결제 차단 창(초). 같은 근로자는 이 안에 한 번만 청구된다. None이면
+    # Config.RELAY_DECISION_TTL_SECONDS. 리더 설정 dedup:과 같은 값이어야 한다.
+    relay_dedup_seconds: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
     building_name: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     naver_map_link: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     kakao_map_link: Mapped[Optional[str]] = mapped_column(Text, nullable=True)

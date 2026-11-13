@@ -40,11 +40,12 @@ from app.schemas.readers import (
     ReaderResponse,
     ReaderSetupCreate,
     ReaderSetupResponse,
+    RelaySettingsResponse,
 )
 from app.services import relay_v2
 from app.services.audit import AuditLogEntry, add_audit_log, request_id_from_request
 from app.utils.db import check_admin_user, get_current_user, get_db
-from app.utils.restaurants import get_restaurant_with_permission
+from app.utils.restaurants import get_restaurant_with_permission, relay_dedup_seconds
 
 
 router = APIRouter(prefix="/restaurants", tags=["Reader"])
@@ -212,6 +213,33 @@ async def _ensure_rid_allowed(restaurant: Restaurant, current_user: User) -> Non
     )
 
 
+async def _apply_restaurant_settings(
+    restaurant: Restaurant, settings: ReaderConfigCreate, current_user: User
+) -> None:
+    """식당 단위 설정을 검사하고 서버에도 반영한다.
+
+    rid는 주인·관리자만 쓴다. dedup(재결제 차단 창)은 서버 결제 판정에도 쓰이므로 QR을
+    발급하는 순간 식당에 저장한다(리더는 QR을 찍어야 바뀐다).
+    """
+    if settings.rid is not None:
+        await _ensure_rid_allowed(restaurant, current_user)
+    if settings.dedup is not None:
+        restaurant.relay_dedup_seconds = settings.dedup
+
+
+@router.get("/{restaurant_id}/relay-settings")
+async def get_relay_settings(
+    restaurant_id: int,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_user)],
+) -> BaseSchema[RelaySettingsResponse]:
+    """식당의 결제 중계 설정(지금은 재결제 차단 창)을 돌려준다."""
+    restaurant = await get_restaurant_with_permission(restaurant_id, db, current_user)
+    return BaseSchema[RelaySettingsResponse](
+        data=RelaySettingsResponse(dedup=relay_dedup_seconds(restaurant))
+    )
+
+
 @router.get("/{restaurant_id}/readers")
 async def list_readers(
     restaurant_id: int,
@@ -355,8 +383,7 @@ async def issue_reader_settings_qr(  # noqa: PLR0913
             status_code=Config.HttpStatus.BAD_REQUEST,
             detail="설정할 필드를 최소 하나는 보내야 합니다.",
         )
-    if settings.rid is not None:
-        await _ensure_rid_allowed(restaurant, current_user)
+    await _apply_restaurant_settings(restaurant, settings, current_user)
     payload = build_config_payload(settings).encode("utf-8")
     if len(payload) > relay_v2.SETUP_PAYLOAD_MAX:
         raise HTTPException(
@@ -442,8 +469,7 @@ async def issue_reader_config_qr(  # noqa: PLR0913
             status_code=Config.HttpStatus.BAD_REQUEST,
             detail="설정할 필드를 최소 하나는 보내야 합니다.",
         )
-    if settings.rid is not None:
-        await _ensure_rid_allowed(restaurant, current_user)
+    await _apply_restaurant_settings(restaurant, settings, current_user)
     if restaurant.scanner_key_hash is None:
         raise HTTPException(
             status_code=Config.HttpStatus.BAD_REQUEST,

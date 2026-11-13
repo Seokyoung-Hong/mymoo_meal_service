@@ -549,3 +549,8 @@ def build_operating_hours_entries(
             operating_hours_entries.append(entry)
 
     return operating_hours_entries
+
+
+def relay_dedup_seconds(restaurant: Restaurant) -> int:
+    """식당의 재결제 차단 창(초). 사장님이 정하지 않았으면 서버 기본값."""
+    return restaurant.relay_dedup_seconds or Config.RELAY_DECISION_TTL_SECONDS

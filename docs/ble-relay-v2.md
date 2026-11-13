@@ -51,9 +51,12 @@ v1(docs/ble-relay.md)은 기존 리더용으로 계속 동작한다. 같은 `POS
   ```
   - 리더 검증: 길이·ver → 서명 → kid → bt_mac·reader_pub이 자기 것 → reader_id ≠ 0 → ctr > 저장값.
   - 감사 로그 `restaurant_reader.setup_qr.issue`(bt_mac·ctr·ssid만, 비밀번호 없음). 벡터는 §8 끝.
-  - 설치 후 설정 변경: `POST /restaurants/{id}/readers/{bt_mac}/settings-qr {ssid?,password?,mode?,rid?,t_adv?,t_req?,t_rsp?}`
+  - 설치 후 설정 변경: `POST /restaurants/{id}/readers/{bt_mac}/settings-qr {ssid?,password?,mode?,rid?,t_adv?,t_req?,t_rsp?,vol?,tts?,dedup?}`
     → 등록된 공개키로 같은 `SK2S.` QR을 다시 서명(`setup_ctr += 1`, payload = `config-qr`과 같은 줄 순서).
     설치 안 된 리더(공개키 없음)·빈 요청은 400. 감사 로그 `restaurant_reader.settings_qr.issue`(필드 이름만).
+    `vol` 음량 0..100, `tts` 음성 속도 0.5..2.0, `dedup` 재결제 차단 창 30..600초(펌웨어 범위와 같다).
+    `dedup`은 발급 즉시 식당(`Restaurant.relay_dedup_seconds`)에도 저장돼 서버 2단 멱등·오프라인 중복 판정 창이 된다.
+    리더는 QR을 찍어야 바뀌므로 식당의 모든 리더에 같은 QR 설정을 적용할 것. 현재 값: `GET /restaurants/{id}/relay-settings` → `{dedup}`.
 - 설치 절차 B — USB (예비)
   1. `GET /relay/keys` → `{"kid":1,"sign_pub":"<hex64>","enc_pub":"<hex64>"}` (인증 없음)
   2. USB로 리더에 `sign_pub`·`enc_pub`·`kid` 주입, 리더 공개키(hex64) 읽기
@@ -124,7 +127,7 @@ resp        = n_rsp ‖ ChaCha20-Poly1305(k_rsp, nonce=n_rsp, aad=0x02, signed) 
 | 3 | 가격 정책 없음 | NO PRICE |
 | 4 | 리더 미등록·공개키 없음·리더 서명 불일치·식당 비활성 | DEV AUTH |
 | 5 | QR 만료 | EXPIRED |
-| 6 | 이미 결제됨: 같은 (식당, 근로자)가 90초 안에 승인됨. 결제 없음, 금액·txid는 첫 결제 것 | DUPLICATE |
+| 6 | 이미 결제됨: 같은 (식당, 근로자)가 재결제 차단 창(기본 90초) 안에 승인됨. 결제 없음, 금액·txid는 첫 결제 것 | DUPLICATE |
 
 - 거절도 200. 400은 base64·길이·ver/kid·eph_pub 오류(저차 점)·**복호화 실패(폰이 바꿈)** 뿐이다. 429는 IP당 초당 5회 초과.
 - ticket_id·qn은 요청 QR의 바이트를 그대로 돌려준다. 승인이 아니면 금액·txid는 0.
@@ -135,7 +138,7 @@ resp        = n_rsp ‖ ChaCha20-Poly1305(k_rsp, nonce=n_rsp, aad=0x02, signed) 
 ### 멱등 (v1과 같음)
 
 - 1단: 요청 바이트 전체가 같으면 300초 안에는 저장된 응답을 그대로 준다.
-- 2단: `(식당, 근로자)`로 `RELAY_DECISION_TTL_SECONDS`(90초) 안의 결정을 재사용한다. 재스캔해도 한 번만 청구.
+- 2단: `(식당, 근로자)`로 식당의 재결제 차단 창(`relay_dedup_seconds`, 없으면 `RELAY_DECISION_TTL_SECONDS` 90초) 안의 결정을 재사용한다. 재스캔해도 한 번만 청구.
   첫 결정이 승인이었으면 status 6(DUPLICATE)으로 알린다. 거절 결정은 그대로 준다.
   v1·v2가 같은 표를 쓰므로 두 버전을 섞어 찍어도 한 번만 청구된다.
 

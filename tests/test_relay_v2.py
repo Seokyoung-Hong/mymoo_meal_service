@@ -629,3 +629,33 @@ async def test_settings_qr_signs_config_for_installed_reader_only(
     assert body[49:] == b"ssid: AP\npassword: pw\nmode: ble\nt_rsp: 8000"
     assert empty.status_code == 400
     assert uninstalled.status_code == 400
+
+
+async def test_settings_qr_carries_sound_and_dedup_and_saves_dedup(
+    async_client: AsyncClient,
+    db_session: AsyncSession,
+    test_app: FastAPI,
+    fixed_secret: bytes,
+) -> None:
+    _, owner, restaurant = await seed_worker_and_restaurant(db_session)
+    restaurant_id = restaurant.id
+    await override_current_user(test_app, owner)
+    base = f"/restaurants/{restaurant_id}/readers"
+    _ = await async_client.post(f"{base}/setup", json={"reg": SETUP_REG})
+    before = await async_client.get(f"/restaurants/{restaurant_id}/relay-settings")
+
+    issued = await async_client.post(
+        f"{base}/acebe6c20d1a/settings-qr",
+        json={"vol": 70, "tts": 1.2, "dedup": 120},
+    )
+    too_short = await async_client.post(
+        f"{base}/acebe6c20d1a/settings-qr", json={"dedup": 10}
+    )
+    after = await async_client.get(f"/restaurants/{restaurant_id}/relay-settings")
+
+    assert before.json()["data"]["dedup"] == 90
+    assert issued.status_code == 200, issued.text
+    body = qr_bytes(issued.json()["data"]["setup_qr"])[:-64]
+    assert body[49:] == b"vol: 70\ntts: 1.2\ndedup: 120"
+    assert too_short.status_code == 422
+    assert after.json()["data"]["dedup"] == 120
