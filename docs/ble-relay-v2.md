@@ -51,6 +51,9 @@ v1(docs/ble-relay.md)은 기존 리더용으로 계속 동작한다. 같은 `POS
   ```
   - 리더 검증: 길이·ver → 서명 → kid → bt_mac·reader_pub이 자기 것 → reader_id ≠ 0 → ctr > 저장값.
   - 감사 로그 `restaurant_reader.setup_qr.issue`(bt_mac·ctr·ssid만, 비밀번호 없음). 벡터는 §8 끝.
+  - 설치 후 설정 변경: `POST /restaurants/{id}/readers/{bt_mac}/settings-qr {ssid?,password?,mode?,rid?,t_adv?,t_req?,t_rsp?}`
+    → 등록된 공개키로 같은 `SK2S.` QR을 다시 서명(`setup_ctr += 1`, payload = `config-qr`과 같은 줄 순서).
+    설치 안 된 리더(공개키 없음)·빈 요청은 400. 감사 로그 `restaurant_reader.settings_qr.issue`(필드 이름만).
 - 설치 절차 B — USB (예비)
   1. `GET /relay/keys` → `{"kid":1,"sign_pub":"<hex64>","enc_pub":"<hex64>"}` (인증 없음)
   2. USB로 리더에 `sign_pub`·`enc_pub`·`kid` 주입, 리더 공개키(hex64) 읽기

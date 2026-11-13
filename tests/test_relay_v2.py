@@ -499,7 +499,9 @@ async def test_offline_token_charges_once(
     used_at = int(time.time()) - 10
 
     use = r.OfflineRecord(TICKET, iat, qn, used_at, 1)
-    reuse = r.OfflineRecord(TICKET, iat, qn, used_at + 5, 2)  # 스크린샷으로 한 번 더(창 끝을 넘지 않게)
+    reuse = r.OfflineRecord(
+        TICKET, iat, qn, used_at + 5, 2
+    )  # 스크린샷으로 한 번 더(창 끝을 넘지 않게)
     _, plain = await relay(
         async_client,
         reader_id,
@@ -593,3 +595,37 @@ async def test_setup_registers_reader_and_issues_increasing_setup_qr(
     assert (row["label"], row["pubkey"]) == ("카운터", new_pub.hex())
 
     assert bad.status_code == 400
+
+
+async def test_settings_qr_signs_config_for_installed_reader_only(
+    async_client: AsyncClient,
+    db_session: AsyncSession,
+    test_app: FastAPI,
+    fixed_secret: bytes,
+) -> None:
+    _, owner, restaurant = await seed_worker_and_restaurant(db_session)
+    restaurant_id = restaurant.id
+    await override_current_user(test_app, owner)
+    base = f"/restaurants/{restaurant_id}/readers"
+    setup = await async_client.post(f"{base}/setup", json={"reg": SETUP_REG})
+    _ = await async_client.post(base, json={"bt_mac": "112233445566"})
+
+    issued = await async_client.post(
+        f"{base}/acebe6c20d1a/settings-qr",
+        json={"ssid": "AP", "password": "pw", "mode": "ble", "t_rsp": 8000},
+    )
+    empty = await async_client.post(f"{base}/acebe6c20d1a/settings-qr", json={})
+    uninstalled = await async_client.post(
+        f"{base}/112233445566/settings-qr", json={"mode": "auto"}
+    )
+
+    assert setup.status_code == 200, setup.text
+    assert issued.status_code == 200, issued.text
+    signed = qr_bytes(issued.json()["data"]["setup_qr"])
+    body, sig = signed[:-64], signed[-64:]
+    r.ServerKeys.from_secret(SECRET).sign.public_key().verify(sig, r.CTX_SETUP + body)
+    assert body[8:40] == r.raw_public(READER_KEY.public_key())
+    assert struct.unpack("<II", body[40:48])[1] == 2  # 설치 QR 다음 ctr
+    assert body[49:] == b"ssid: AP\npassword: pw\nmode: ble\nt_rsp: 8000"
+    assert empty.status_code == 400
+    assert uninstalled.status_code == 400

@@ -327,6 +327,80 @@ async def setup_reader(
     )
 
 
+@router.post("/{restaurant_id}/readers/{bt_mac}/settings-qr")
+async def issue_reader_settings_qr(  # noqa: PLR0913
+    restaurant_id: int,
+    bt_mac: str,
+    settings: ReaderConfigCreate,
+    request: Request,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_user)],
+) -> BaseSchema[ReaderSetupResponse]:
+    """Issue a server-signed ``SK2S.`` QR that changes an installed v2 reader's settings.
+
+    ``config-qr``(SKC1)은 식당 스캐너 키가 들어간 v1 리더용이다. QR로 설치한 v2 리더는
+    스캐너 키가 없으므로, 등록된 공개키로 설치 QR을 다시 만들고 설정을 payload에 싣는다.
+    리더는 서명·MAC·공개키·ctr을 확인한 뒤 payload를 평문 설정 문법 그대로 적용한다.
+    """
+    restaurant = await get_restaurant_with_permission(restaurant_id, db, current_user)
+    reader = await _get_reader_or_404(db, restaurant_id, normalize_bt_mac(bt_mac))
+    if reader.pubkey is None:
+        raise HTTPException(
+            status_code=Config.HttpStatus.BAD_REQUEST,
+            detail="아직 설치되지 않은 리더입니다. 먼저 리더기 설치를 해 주세요.",
+        )
+    fields = list(settings.model_dump(exclude_none=True))
+    if not fields:
+        raise HTTPException(
+            status_code=Config.HttpStatus.BAD_REQUEST,
+            detail="설정할 필드를 최소 하나는 보내야 합니다.",
+        )
+    if settings.rid is not None:
+        await _ensure_rid_allowed(restaurant, current_user)
+    payload = build_config_payload(settings).encode("utf-8")
+    if len(payload) > relay_v2.SETUP_PAYLOAD_MAX:
+        raise HTTPException(
+            status_code=Config.HttpStatus.BAD_REQUEST,
+            detail=f"설정은 {relay_v2.SETUP_PAYLOAD_MAX}바이트를 넘을 수 없습니다.",
+        )
+
+    reader.setup_ctr += 1
+    try:
+        setup_qr = relay_v2.make_setup_qr(
+            relay_v2.ServerKeys.from_secret(Config.RELAY_TOKEN_SECRET),
+            reader.bt_mac,
+            bytes.fromhex(reader.pubkey),
+            reader.id,
+            reader.setup_ctr,
+            payload,
+        )
+        _ = add_audit_log(
+            db,
+            AuditLogEntry(
+                request_id=request_id_from_request(request),
+                actor_user_id=current_user.user_id,
+                action="restaurant_reader.settings_qr.issue",
+                resource_type="restaurant_reader",
+                resource_id=reader.id,
+                # 값은 남기지 않는다(password).
+                after={
+                    "bt_mac": reader.bt_mac,
+                    "ctr": reader.setup_ctr,
+                    "fields": fields,
+                },
+            ),
+        )
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        raise
+    return BaseSchema[ReaderSetupResponse](
+        data=ReaderSetupResponse(
+            reader_id=reader.id, bt_mac=reader.bt_mac, setup_qr=setup_qr
+        )
+    )
+
+
 @router.delete(
     "/{restaurant_id}/readers/{bt_mac}",
     status_code=Config.HttpStatus.NO_CONTENT,
